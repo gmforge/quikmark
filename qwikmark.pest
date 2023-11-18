@@ -1,0 +1,133 @@
+Document = { Block* ~ NEWLINE* ~ EOI }
+
+//{=format #identifier .class key=value key="value" %comment%}
+// TODO: Key = { Field ~ "=" ~ ("\"" ~ (!(NEWLINE ~ "\"") ~ "\\"? ~ ANY)+ ~ "\"" | Field) }
+// TODO: Comment = { "%" ~ (!(NEWLINE ~ "%") ~ "\\"? ~ ANY)+ ~ "%" }
+Field     = { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+Format    = { "=" ~ Field }
+Identifier = { "#" ~ Field }
+Class     = { "." ~ Field }
+Attribute = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
+
+Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
+Strong      =  { "*" }
+Emphasis    =  { "_" }
+Superscript =  { "^" }
+Subscript   =  { "~" }
+Hash        =  { "#" }
+Verbatim    =  { "`"+ }
+Highlight   =  { "=" }
+Insert      =  { "+" }
+Delete      =  { "-" }
+EdgeTag     = _{
+    Strong
+  | Emphasis
+}
+UnboundTag  = _{
+    Superscript
+  | Subscript
+  | Hash
+  | Verbatim
+}
+BracketTag  = _{
+    EdgeTag
+  | Highlight
+  | Insert
+  | Delete
+}
+
+End      =  { NEWLINE ~ NEWLINE | EOI }
+Break    =  { "\\" ~ &NEWLINE }
+Char     =  { !NEWLINE ~ "\\"? ~ ANY }
+HashTag  =  { Edge ~ Hash ~ LinkText }
+RawText  =  { (!(PEEK | NEWLINE) ~ ANY)+ }
+Raw      =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
+LinkDlmr = _{ "|" | &("]" | NEWLINE | EOI) }
+LinkText =  { (("\\" | !LinkDlmr) ~ ANY)+ }
+Link     =  { "[[" ~ LinkText ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
+Span     =  {
+    Raw
+  | HashTag
+  | Link
+  | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
+  | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
+  | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
+  | Break
+  | Char
+  | NEWLINE ~ !NEWLINE
+}
+
+LineHash = { Edge ~ Hash ~ LinkText }
+LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY } 
+LineEnd  = { "|" | NEWLINE | EOI }
+LinkLine = { "[[" ~ LinkText ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
+Line = {
+    Raw
+  | LineHash
+  | Link
+  | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Line | LineChar))+ ~ (POP ~ "]" ~ Attribute* | &LineEnd ~ DROP)
+  | PUSH(UnboundTag) ~ (!PEEK ~ (Line | LineChar))+ ~ (POP | &(LineEnd ~ DROP))
+  | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Line | LineChar))+ ~ (POP ~ &Edge | &LineEnd ~ DROP)
+  | LineChar
+}
+
+Div = {
+  (NEWLINE+ | SOI) ~ ":::" ~ Attribute* ~ " " ~ Field ~ &(NEWLINE | EOI) ~
+  (!(NEWLINE+ ~ ":::") ~ Block)* ~
+  NEWLINE+ ~ (":::" ~ &(NEWLINE | EOI) | EOI)
+}
+
+CodeStart = { (NEWLINE+ | SOI) ~ PUSH("`"{3, 6}) ~ Attribute* }
+CodeText  = { NEWLINE ~ (!NEWLINE ~ ANY)* }
+CodeStop  = { NEWLINE ~ POP }
+Code      = { CodeStart ~ (!CodeStop ~ CodeText)* ~ (CodeStop | &(NEWLINE | EOI)) }
+
+RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
+RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
+Definition  = { ": " ~ Field }
+Unordered  = { "-" | "+" | "*" }
+Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
+ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..] ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem)+ }
+ListItem   = { Span+ ~ ListBlock* }
+ListBlock  = {
+  NEWLINE+ ~
+  PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem ~
+  (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~
+  DROP
+}
+
+H1      = { "#" }
+H2      = { "##" }
+H3      = { "###" }
+H4      = { "####" }
+H5      = { "#####" }
+H6      = { "######" }
+Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ LinkText ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
+
+CellEnd      = _{ "|" | &(NEWLINE | EOI) }
+Cell         =  { "|" ~ Line+ }
+Row          =  { Cell+ ~ CellEnd }
+AlignRight   =  { "-"+ ~ ":" }
+AlignDefault =  { "-"+ }
+AlignCenter  =  { ":" ~ "-"+ ~ ":" }
+AlignLeft    =  { ":" ~ "-"+ }
+Layout       =  { ("|" ~ " "* ~ (AlignRight | AlignDefault | AlignCenter | AlignLeft) ~ " "*)+ ~ CellEnd }
+Table        =  {
+  (NEWLINE+ | SOI) ~ Row ~
+  NEWLINE ~ Layout ~
+  (NEWLINE ~ Row)*
+}
+
+// Have to exclude Div delimiter because it envelops other blocks,
+// so Paragraph ends up validating before Div as Paragraph accepts
+// any input.
+Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
+
+Block = {
+    Div
+  | Code
+  | ListHead
+  | Heading
+  | Table
+  | Paragraph
+}
