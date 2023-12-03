@@ -58,7 +58,7 @@ Span     =  {
 }
 
 LineHash = { Edge ~ Hash ~ LinkText }
-LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY } 
+LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY }
 LineEnd  = { "|" | NEWLINE | EOI }
 LinkLine = { "[[" ~ LinkText ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
 Line = {
