@@ -1,15 +1,16 @@
 use nom::branch::alt;
-use nom::bytes::complete::{is_not, tag, take_while1};
+use nom::bytes::complete::{is_a, is_not, tag, take_while1};
 use nom::character::complete::anychar;
 use nom::character::{is_newline, is_space};
 use nom::combinator::opt;
 use nom::sequence::preceded;
 use nom::IResult;
+use phf::phf_map;
 use std::{env, error::Error, fs};
 
 // Algorithm
 //   1) Have stack for blocks we call context where each block has their own stack for spans.
-//   2) Scan until find a quikmark boundary and the push/pop Block and Span content.
+//   2) Scan until find a qwikmark boundary and the push/pop Block and Span content.
 //      NOTE: Will need ability to read stack from bottom up to determin if Block context
 //      and thus Scan stack ends.
 // Thus could have root > list > quote > list > span
@@ -48,15 +49,42 @@ enum Block<'a> {
     Paragraph(Vec<Span<'a>>),
 }
 
+// Strong      =  { "*" }
+// Emphasis    =  { "_" }
+// Superscript =  { "^" }
+// Subscript   =  { "~" }
+// Hash        =  { "#" }
+// Verbatim    =  { "`"+ }
+// Highlight   =  { "=" }
+// Insert      =  { "+" }
+// Delete      =  { "-" }
+static SPANS: phf::Map<char, &'static str> = phf_map! {
+    '*' => "Strong",
+    '_' => "Emphasis",
+    '^' => "Superscript",
+    '~' => "Subscript",
+    '#' => "Hash",
+    '`' => "Verbatim",
+    '=' => "Highlight",
+    '+' => "Insert",
+    '-' => "Delete",
+};
 #[derive(Debug, PartialEq, Eq)]
 enum Span<'a> {
     LineBreak(char),
     NBWS(char),
     Esc(char),
-    Hash(&'a str),
-    Link(&'a str, Vec<Span<'a>>),
     Text(&'a str),
+    Link(&'a str, Vec<Span<'a>>),
+    Hash(&'a str),
     Verbatim(&'a str, &'a str, &'a str),
+    Strong(Vec<Span<'a>>),
+    Emphasis(Vec<Span<'a>>),
+    Superscript(Vec<Span<'a>>),
+    Subscript(Vec<Span<'a>>),
+    Highlight(Vec<Span<'a>>),
+    Insert(Vec<Span<'a>>),
+    Delete(Vec<Span<'a>>),
     EOM,
 }
 
@@ -73,37 +101,13 @@ fn qwikmark<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
 
 // NOTE: Simplfy by allowing all tags to be Bound with square brackets ([])
 // Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
-// Strong      =  { "*" }
-// Emphasis    =  { "_" }
-// Superscript =  { "^" }
-// Subscript   =  { "~" }
-// Hash        =  { "#" }
-// Verbatim    =  { "`"+ }
-// Highlight   =  { "=" }
-// Insert      =  { "+" }
-// Delete      =  { "-" }
-// EdgeTag     = _{
-//     Strong
-//   | Emphasis
-// }
-// UnboundTag  = _{
-//     Superscript
-//   | Subscript
-//   | Hash
-//   | Verbatim
-// }
-// BracketTag  = _{
-//     EdgeTag
-//   | Highlight
-//   | Insert
-//   | Delete
-// }
 
 // Format     = { "=" ~ Field }
 // Identifier = { "#" ~ Field }
 // Class      = { "." ~ Field }
 // Attribute  = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
 
+// End       =  { NEWLINE ~ NEWLINE | EOI }
 fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
     // Input has ended
     if input == "" {
@@ -115,6 +119,7 @@ fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
     Ok((input, Span::EOM))
 }
 
+// LineBreak =  { "\\" ~ &NEWLINE }
 fn escaped<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, b) = preceded(tag("\\"), anychar)(input)?;
     if is_space(b as u8) {
@@ -125,6 +130,13 @@ fn escaped<'a>(input: &'a str) -> IResult<&'a str, Span> {
         Ok((i, Span::Esc(b)))
     }
 }
+
+// UnboundTag  = _{
+//     Superscript
+//   | Subscript
+//   | Hash
+//   | Verbatim
+// }
 
 // RawText   =  { (!(PEEK | NEWLINE) ~ ANY)+ }
 // Raw       =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
@@ -171,6 +183,38 @@ fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
     Ok((i, Span::Hash(h)))
 }
 
+// brackettag  = _{
+//     edgetag    // strong(*), emphasis(_)
+//   | highlight  // (=)
+//   | insert     // (+)
+//   | delete     // (-)
+// }
+// NOTE: Added for consistency the Superscript and Subscript
+//   Span types to bracket tags for consistency and versatility.
+fn bracket(input: &str) -> IResult<&str, Span> {
+    let (i, t) = preceded(tag("["), is_a("*_=+-^~"))(input)?;
+    let closing_tag = t.to_string() + "]";
+    let (i, ss) = spans(i, Some(&closing_tag))?;
+    match t {
+        "*" => Ok((i, Span::Strong(ss))),
+        "_" => Ok((i, Span::Emphasis(ss))),
+        "=" => Ok((i, Span::Highlight(ss))),
+        "+" => Ok((i, Span::Insert(ss))),
+        "-" => Ok((i, Span::Delete(ss))),
+        "^" => Ok((i, Span::Superscript(ss))),
+        "~" => Ok((i, Span::Subscript(ss))),
+        _ => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Alt,
+        ))),
+    }
+}
+
+// edgetag     = _{
+//     strong
+//   | emphasis
+// }
+
 // LinkDlmr  = _{ "|" | &("]" | NEWLINE | EOI) }
 // Locator   =  { (("\\" | !LinkDlmr) ~ ANY)+ }
 fn locator(input: &str) -> IResult<&str, &str> {
@@ -182,25 +226,10 @@ fn locator(input: &str) -> IResult<&str, &str> {
 // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
 fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, l) = preceded(tag("[["), locator)(input)?;
-    let (i, ss) = spans(i, false, Some("]]"))?;
+    let (i, ss) = spans(i, Some("]]"))?;
     Ok((i, Span::Link(l, ss)))
 }
 
-//fn link_allow<'a>(allow: bool) -> dyn Fn(&'a str) -> IResult<&'a str, Span> {
-//    move |input: &'a str| {
-//        if allow {
-//            link(input)
-//        } else {
-//            Err(nom::Err::Error(nom::error::Error::new(
-//                input,
-//                nom::error::ErrorKind::Alt,
-//            )))
-//        }
-//    }
-//}
-
-// End       =  { NEWLINE ~ NEWLINE | EOI }
-// LineBreak =  { "\\" ~ &NEWLINE }
 // Char      =  { !NEWLINE ~ "\\"? ~ ANY }
 // Span      =  {
 //     Break
@@ -213,11 +242,7 @@ fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
 //   | Char
 //   | NEWLINE ~ !NEWLINE
 // }
-fn spans<'a, 'b>(
-    input: &'a str,
-    _linkable: bool,
-    closer: Option<&'b str>,
-) -> IResult<&'a str, Vec<Span<'a>>> {
+fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Vec<Span<'a>>> {
     let mut ss = Vec::new();
     let mut i = input;
     // Loop through text until reach two newlines
@@ -235,7 +260,7 @@ fn spans<'a, 'b>(
                 break;
             }
         }
-        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link))(i) {
+        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
             if char_total_length > 0 {
                 let (text, _) = text_start.split_at(char_total_length);
                 ss.push(Span::Text(text));
@@ -333,7 +358,7 @@ fn spans<'a, 'b>(
 
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
 fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    let (i, ss) = spans(input, true, None)?;
+    let (i, ss) = spans(input, None)?;
     Ok((i, Block::Paragraph(ss)))
 }
 
@@ -521,6 +546,35 @@ mod tests {
                         vec![Span::Text("text "), Span::Verbatim("`", "`", "verbatim")]
                     ),
                     Span::Text(" right")
+                ])
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_nested_spans() {
+        assert_eq!(
+            block("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
+            Ok((
+                "",
+                Block::Paragraph(vec![
+                  Span::Text("text-left "),
+                  Span::Strong(vec![
+                    Span::Text("strong-left "),
+                    Span::Emphasis(vec![
+                      Span::Text("emphasis-center")
+                    ]),
+                    Span::Text("\t"),
+                    Span::Insert(vec![
+                      Span::Text("insert-left "),
+                      Span::Superscript(vec![
+                        Span::Text("superscript-center")
+                      ]),
+                      Span::Text(" insert-right")
+                    ]),
+                    Span::Text(" strong-right")
+                  ]),
+                  Span::Text(" text-right")
                 ])
             ))
         );
