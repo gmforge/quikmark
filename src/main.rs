@@ -1,9 +1,9 @@
 use nom::branch::alt;
-use nom::bytes::complete::{is_a, is_not, tag, take_while1};
-use nom::character::complete::anychar;
+use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
+use nom::character::complete::{anychar, multispace0, space1};
 use nom::character::{is_newline, is_space};
 use nom::combinator::opt;
-use nom::sequence::preceded;
+use nom::sequence::{preceded, terminated};
 use nom::IResult;
 use phf::phf_map;
 use std::{env, error::Error, fs};
@@ -44,11 +44,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Block<'a> {
-    Paragraph(Vec<Span<'a>>),
-}
-
 // Strong      =  { "*" }
 // Emphasis    =  { "_" }
 // Superscript =  { "^" }
@@ -86,17 +81,6 @@ enum Span<'a> {
     Insert(Vec<Span<'a>>),
     Delete(Vec<Span<'a>>),
     EOM,
-}
-
-// Document = { Block* ~ NEWLINE* ~ EOI }
-fn qwikmark<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
-    let mut bs = Vec::new();
-    let mut input: &'a str = input;
-    while let Ok((i, b)) = block(input) {
-        bs.push(b);
-        input = i;
-    }
-    Ok((input, bs))
 }
 
 // NOTE: Simplfy by allowing all tags to be Bound with square brackets ([])
@@ -253,7 +237,7 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
     let mut char_total_length: usize = 0;
     let mut trim_closer = false;
     while i != "" {
-        // println!("input: {:?}", i);
+        // println!("input: {:?}, text_start: {:?}", i, text_start);
         if let Some(closer) = closer {
             if i.starts_with(closer) {
                 trim_closer = true;
@@ -266,6 +250,8 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
                 ss.push(Span::Text(text));
                 text_start = input;
                 char_total_length = 0;
+            } else if closer == None {
+                text_start = input;
             }
             i = input;
             // End of Mark (EOM) Indicates a common ending point
@@ -333,6 +319,30 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 //   (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~
 //   DROP
 // }
+// NOTE: Block::List will serve as both ListHead and ListBlock
+#[derive(Debug, PartialEq, Eq)]
+enum Enumerator<'a> {
+    AlphaLower(&'a str), // is_alpha
+    AlphaUpper(&'a str),
+    DigitLower(&'a str),
+    DigitUpper(&'a str),
+    RomanLower(&'a str), // is_a("ivxlcdm")
+    RomanUpper(&'a str), // is_a("IVXLCDM")
+}
+#[derive(Debug, PartialEq, Eq)]
+enum Index<'a> {
+    Definition(&'a str),     // Locator
+    Ordered(Enumerator<'a>), // (e), e), e.
+    Unordered(&'a str),      // -, +, *
+}
+#[derive(Debug, PartialEq, Eq)]
+struct ListItem<'a>(
+    Index<'a>,
+    // Block::Paragraph(Vec<Span<'a>>),
+    Block<'a>,
+    // Block::List(Vec<ListItem<'a>>),
+    Vec<Block<'a>>,
+);
 
 // H1      = { "#" }
 // H2      = { "##" }
@@ -340,7 +350,30 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 // H4      = { "####" }
 // H5      = { "#####" }
 // H6      = { "######" }
+static HLEVEL: phf::Map<&'static str, HLevel> = phf_map! {
+    "#" => HLevel::H1,
+    "##" => HLevel::H2,
+    "###" => HLevel::H3,
+    "####" => HLevel::H4,
+    "#####" => HLevel::H5,
+    "######" => HLevel::H6,
+};
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum HLevel {
+    H1 = 1,
+    H2,
+    H3,
+    H4,
+    H5,
+    H6,
+}
 // Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
+fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
+    let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
+    let level = HLEVEL.get(htag).unwrap();
+    let (i, loc) = field(i)?;
+    Ok((i, Block::Heading(*level, loc)))
+}
 
 // CellEnd      = _{ "|" | &(NEWLINE | EOI) }
 // Cell         =  { "|" ~ Line+ }
@@ -355,6 +388,13 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 //   NEWLINE ~ Layout ~
 //   (NEWLINE ~ Row)*
 // }
+#[derive(Debug, PartialEq, Eq)]
+enum Align {
+    Right,   // --:
+    Default, // ---
+    Center,  // :-:
+    Left,    // :--
+}
 
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
 fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
@@ -364,15 +404,41 @@ fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
 
 // Block = {
 //     Div
+//   | Quote
+//   | Heading
 //   | Code
 //   | ListHead
-//   | Heading
 //   | Table
 //   | Paragraph
 // }
+#[derive(Debug, PartialEq, Eq)]
+enum Block<'a> {
+    Div(&'a str, Vec<Block<'a>>),
+    Quote(Vec<Block<'a>>),
+    Heading(HLevel, &'a str), // Block::Paragraph
+    Code(&'a str),
+    List(Vec<ListItem<'a>>),
+    Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
+    Paragraph(Vec<Span<'a>>),
+}
+
 fn block<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     // TODO: Or each block type with Paragraph as last default type.
-    paragraph(input)
+    alt((heading, paragraph))(input)
+}
+
+// Document = { Block* ~ NEWLINE* ~ EOI }
+fn qwikmark<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
+    let mut bs = Vec::new();
+    let (mut input, _) = multispace0(input)?;
+    while let Ok((i, b)) = block(input) {
+        bs.push(b);
+        (input, _) = multispace0(i)?;
+        if input == "" {
+            break;
+        }
+    }
+    Ok((input, bs))
 }
 
 #[cfg(test)]
@@ -576,6 +642,37 @@ mod tests {
                   ]),
                   Span::Text(" text-right")
                 ])
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_header_field_paragraph() {
+        assert_eq!(
+            qwikmark("## header\n[*strong*]"),
+            Ok((
+                "",
+                vec![
+                    Block::Heading(HLevel::H2, "header"),
+                    Block::Paragraph(vec![Span::Strong(vec![Span::Text("strong")])])
+                ]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_header_field_paragraph_starting_text() {
+        assert_eq!(
+            qwikmark("## header\nleft [*strong*]"),
+            Ok((
+                "",
+                vec![
+                    Block::Heading(HLevel::H2, "header"),
+                    Block::Paragraph(vec![
+                        Span::Text("left "),
+                        Span::Strong(vec![Span::Text("strong")])
+                    ])
+                ]
             ))
         );
     }
