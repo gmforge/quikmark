@@ -1,13 +1,13 @@
 Document = { Block* ~ NEWLINE* ~ EOI }
 
-//{=format #identifier .class key=value key="value" %comment%}
+// {=format #identifier .class key=value key="value" %comment%}
 // TODO: Key = { Field ~ "=" ~ ("\"" ~ (!(NEWLINE ~ "\"") ~ "\\"? ~ ANY)+ ~ "\"" | Field) }
 // TODO: Comment = { "%" ~ (!(NEWLINE ~ "%") ~ "\\"? ~ ANY)+ ~ "%" }
-Field     = { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-Format    = { "=" ~ Field }
-Identifier = { "#" ~ Field }
-Class     = { "." ~ Field }
-Attribute = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
+Field      = { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+Format     = { "=" ~ Field }
+Identifier  = { "#" ~ Field }
+Class      = { "." ~ Field }
+Attribute  = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
 
 Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
 Strong      =  { "*" }
@@ -39,12 +39,12 @@ BracketTag  = _{
 End      =  { NEWLINE ~ NEWLINE | EOI }
 Break    =  { "\\" ~ &NEWLINE }
 Char     =  { !NEWLINE ~ "\\"? ~ ANY }
-HashTag  =  { Edge ~ Hash ~ LinkText }
+HashTag  =  { Edge ~ Hash ~ Location }
 RawText  =  { (!(PEEK | NEWLINE) ~ ANY)+ }
 Raw      =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
 LinkDlmr = _{ "|" | &("]" | NEWLINE | EOI) }
-LinkText =  { (("\\" | !LinkDlmr) ~ ANY)+ }
-Link     =  { "[[" ~ LinkText ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
+Location =  { (("\\" | !LinkDlmr) ~ ANY)+ }
+Link     =  { "[[" ~ Location ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
 Span     =  {
     Raw
   | HashTag
@@ -57,11 +57,11 @@ Span     =  {
   | NEWLINE ~ !NEWLINE
 }
 
-LineHash = { Edge ~ Hash ~ LinkText }
+LineHash = { Edge ~ Hash ~ Location }
 LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY }
 LineEnd  = { "|" | NEWLINE | EOI }
-LinkLine = { "[[" ~ LinkText ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
-Line = {
+LinkLine = { "[[" ~ Location ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
+Line     = {
     Raw
   | LineHash
   | Link
@@ -72,9 +72,7 @@ Line = {
 }
 
 Div = {
-  (NEWLINE+ | SOI) ~ ":::" ~ Attribute* ~ " " ~ Field ~ &(NEWLINE | EOI) ~
-  (!(NEWLINE+ ~ ":::") ~ Block)* ~
-  NEWLINE+ ~ (":::" ~ &(NEWLINE | EOI) | EOI)
+    (NEWLINE+ | SOI) ~ ":::" ~ Attribute* ~ " " ~ Field ~ &(NEWLINE | EOI) ~ (!(NEWLINE+ ~ ":::") ~ Block)* ~ NEWLINE+ ~ (":::" ~ &(NEWLINE | EOI) | EOI)
 }
 
 CodeStart = { (NEWLINE+ | SOI) ~ PUSH("`"{3, 6}) ~ Attribute* }
@@ -84,16 +82,13 @@ Code      = { CodeStart ~ (!CodeStop ~ CodeText)* ~ (CodeStop | &(NEWLINE | EOI)
 
 RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
-Definition  = { ": " ~ Field }
+Definition = { ": " ~ Field }
 Unordered  = { "-" | "+" | "*" }
 Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
 ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..] ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem)+ }
 ListItem   = { Span+ ~ ListBlock* }
 ListBlock  = {
-  NEWLINE+ ~
-  PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem ~
-  (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~
-  DROP
+    NEWLINE+ ~ PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem ~ (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~ DROP
 }
 
 H1      = { "#" }
@@ -102,7 +97,7 @@ H3      = { "###" }
 H4      = { "####" }
 H5      = { "#####" }
 H6      = { "######" }
-Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ LinkText ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
+Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
 
 CellEnd      = _{ "|" | &(NEWLINE | EOI) }
 Cell         =  { "|" ~ Line+ }
@@ -113,9 +108,7 @@ AlignCenter  =  { ":" ~ "-"+ ~ ":" }
 AlignLeft    =  { ":" ~ "-"+ }
 Layout       =  { ("|" ~ " "* ~ (AlignRight | AlignDefault | AlignCenter | AlignLeft) ~ " "*)+ ~ CellEnd }
 Table        =  {
-  (NEWLINE+ | SOI) ~ Row ~
-  NEWLINE ~ Layout ~
-  (NEWLINE ~ Row)*
+    (NEWLINE+ | SOI) ~ Row ~ NEWLINE ~ Layout ~ (NEWLINE ~ Row)*
 }
 
 // Have to exclude Div delimiter because it envelops other blocks,

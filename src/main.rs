@@ -177,7 +177,7 @@ fn field(input: &str) -> IResult<&str, &str> {
     is_not(" \t\r\n]")(input)
 }
 
-// HashTag   =  { Edge ~ Hash ~ LinkText }
+// HashTag   =  { Edge ~ Hash ~ Location }
 fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, h) = preceded(tag("#"), field)(input)?;
     Ok((i, Span::Hash(h)))
@@ -295,10 +295,10 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
     Ok((text_start, ss))
 }
 
-// LineHash = { Edge ~ Hash ~ LinkText }
+// LineHash = { Edge ~ Hash ~ Location }
 // LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY }
 // LineEnd  = { "|" | NEWLINE | EOI }
-// LinkLine = { "[[" ~ LinkText ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
+// LinkLine = { "[[" ~ Location ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
 // Line = {
 //     Raw
 //   | LineHash
@@ -340,7 +340,7 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 // H4      = { "####" }
 // H5      = { "#####" }
 // H6      = { "######" }
-// Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ LinkText ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
+// Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
 
 // CellEnd      = _{ "|" | &(NEWLINE | EOI) }
 // Cell         =  { "|" ~ Line+ }
