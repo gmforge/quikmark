@@ -88,7 +88,7 @@ fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
     }
     // Common block terminator has ended
     // TODO: Account for whitespace and list indentations
-    let (_i, _s) = tag("\n\n")(input)?;
+    let (_i, _s) = tuple((line_ending, line_ending))(input)?;
     Ok((input, Span::EOM))
 }
 
