@@ -1,9 +1,9 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
-use nom::character::complete::{anychar, multispace0, space1};
+use nom::character::complete::{anychar, multispace0, newline, space1};
 use nom::character::{is_newline, is_space};
 use nom::combinator::opt;
-use nom::sequence::{preceded, terminated};
+use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
 
@@ -30,6 +30,8 @@ use phf::phf_map;
 // Text is the default span/tag that joins char runs
 
 // Document -> Block -> Paragragh(If not a block then paragraph)/Text(Collect Non-Spans) -> Span
+
+// SPANS
 
 // Strong      =  { "*" }
 // Emphasis    =  { "_" }
@@ -282,11 +284,7 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 //   | LineChar
 // }
 
-// Div = {
-//   (NEWLINE+ | SOI) ~ ":::" ~ Attribute* ~ " " ~ Field ~ &(NEWLINE | EOI) ~
-//   (!(NEWLINE+ ~ ":::") ~ Block)* ~
-//   NEWLINE+ ~ (":::" ~ &(NEWLINE | EOI) | EOI)
-// }
+// BLOCKS
 
 // CodeStart = { (NEWLINE+ | SOI) ~ PUSH("`"{3, 6}) ~ Attribute* }
 // CodeText  = { NEWLINE ~ (!NEWLINE ~ ANY)* }
@@ -409,23 +407,51 @@ pub enum Block<'a> {
     Paragraph(Vec<Span<'a>>),
 }
 
-fn block<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    // TODO: Or each block type with Paragraph as last default type.
-    alt((heading, paragraph))(input)
+// Div = {
+//   (NEWLINE+ | SOI) ~ ":::" ~ Attribute* ~ " " ~ Field ~ &(NEWLINE | EOI) ~
+//   (!(NEWLINE+ ~ ":::") ~ Block)* ~
+//   NEWLINE+ ~ (":::" ~ &(NEWLINE | EOI) | EOI)
+// }
+// Document = { Block* ~ NEWLINE* ~ EOI }
+fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Block<'a>>> {
+    let mut bs = Vec::new();
+    let mut i = input;
+    loop {
+        (i, _) = multispace0(i)?;
+        if let Some(name) = div {
+            let (input, div_close) = opt(terminated(tag(":::"), newline))(i)?;
+            if div_close != None {
+                return Ok((input, vec![Block::Div(name, bs)]));
+            }
+        }
+        // Div open
+        // let mut div_open: Option<;
+        let (input, div_open) = opt(tuple((terminated(tag(":::"), space1), field)))(i)?;
+        i = input;
+        if let Some((_, name)) = div_open {
+            let mut div_bs: Vec<Block<'a>>;
+            (i, div_bs) = blocks(i, Some(name))?;
+            if let Some(d) = div_bs.pop() {
+                bs.push(d);
+            }
+        } else {
+            let (input, b) = alt((heading, paragraph))(i)?;
+            i = input;
+            bs.push(b);
+        }
+        if i == "" {
+            if let Some(name) = div {
+                return Ok((i, vec![Block::Div(name, bs)]));
+            }
+            return Ok((i, bs));
+        }
+    }
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
-pub fn qwikmark<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
-    let mut bs = Vec::new();
-    let (mut input, _) = multispace0(input)?;
-    while let Ok((i, b)) = block(input) {
-        bs.push(b);
-        (input, _) = multispace0(i)?;
-        if input == "" {
-            break;
-        }
-    }
-    Ok((input, bs))
+pub fn document<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
+    let (i, bs) = blocks(input, None)?;
+    Ok((i, bs))
 }
 
 #[cfg(test)]
@@ -435,10 +461,13 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_line_break() {
         assert_eq!(
-            block("line\\\n"),
+            document("line\\\n"),
             Ok((
                 "",
-                Block::Paragraph(vec![Span::Text("line"), Span::LineBreak('\n')])
+                vec![Block::Paragraph(vec![
+                    Span::Text("line"),
+                    Span::LineBreak('\n')
+                ])]
             ))
         );
     }
@@ -446,14 +475,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_nbsp() {
         assert_eq!(
-            block("left\\\tright"),
+            document("left\\\tright"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left"),
                     Span::NBWS('\t'),
                     Span::Text("right")
-                ])
+                ])]
             ))
         );
     }
@@ -461,14 +490,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_text() {
         assert_eq!(
-            block("left ``verbatim`` right"),
+            document("left ``verbatim`` right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Verbatim("``", "``", "verbatim"),
                     Span::Text(" right")
-                ])
+                ])]
             ))
         );
     }
@@ -476,14 +505,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_newline() {
         assert_eq!(
-            block("left ``verbatim\n right"),
+            document("left ``verbatim\n right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Verbatim("``", "\n", "verbatim"),
                     Span::Text(" right")
-                ])
+                ])]
             ))
         );
     }
@@ -491,14 +520,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_with_nonmatching_backtick() {
         assert_eq!(
-            block("left ``ver```batim`` right"),
+            document("left ``ver```batim`` right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Verbatim("``", "``", "ver```batim"),
                     Span::Text(" right")
-                ])
+                ])]
             ))
         );
     }
@@ -506,14 +535,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_with_enclosing_backtick() {
         assert_eq!(
-            block("left `` `verbatim` `` right"),
+            document("left `` `verbatim` `` right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Verbatim("``", "``", "`verbatim`"),
                     Span::Text(" right")
-                ])
+                ])]
             ))
         );
     }
@@ -521,26 +550,29 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_empty_eom() {
         assert_eq!(
-            block("left #"),
-            Ok(("", Block::Paragraph(vec![Span::Text("left #")])))
+            document("left #"),
+            Ok(("", vec![Block::Paragraph(vec![Span::Text("left #")])]))
         );
     }
 
     #[test]
     fn test_block_paragraph_hash_empty_space() {
         assert_eq!(
-            block("left # "),
-            Ok(("", Block::Paragraph(vec![Span::Text("left # ")])))
+            document("left # "),
+            Ok(("", vec![Block::Paragraph(vec![Span::Text("left # ")])]))
         );
     }
 
     #[test]
     fn test_block_paragraph_hash_field_eom() {
         assert_eq!(
-            block("left #hash"),
+            document("left #hash"),
             Ok((
                 "",
-                Block::Paragraph(vec![Span::Text("left "), Span::Hash("hash")])
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Hash("hash")
+                ])]
             ))
         );
     }
@@ -548,14 +580,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_field_newline() {
         assert_eq!(
-            block("left #hash\nnext line"),
+            document("left #hash\nnext line"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Hash("hash"),
                     Span::Text("\nnext line")
-                ])
+                ])]
             ))
         );
     }
@@ -563,10 +595,13 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_location() {
         assert_eq!(
-            block("left [[loc]]"),
+            document("left [[loc]]"),
             Ok((
                 "",
-                Block::Paragraph(vec![Span::Text("left "), Span::Link("loc", vec![])])
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Link("loc", vec![])
+                ])]
             ))
         );
     }
@@ -574,14 +609,14 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_text() {
         assert_eq!(
-            block("left [[loc|text]] right"),
+            document("left [[loc|text]] right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Link("loc", vec![Span::Text("text")]),
                     Span::Text(" right")
-                ])
+                ])]
             ))
         );
     }
@@ -589,17 +624,17 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
         assert_eq!(
-            block("left [[loc|text `verbatim`]] right"),
+            document("left [[loc|text `verbatim`]] right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
                         vec![Span::Text("text "), Span::Verbatim("`", "`", "verbatim")]
                     ),
                     Span::Text(" right")
-                ])
+                ])]
             ))
         );
     }
@@ -607,10 +642,10 @@ mod tests {
     #[test]
     fn test_block_paragraph_nested_spans() {
         assert_eq!(
-            block("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
+            document("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
             Ok((
                 "",
-                Block::Paragraph(vec![
+                vec![Block::Paragraph(vec![
                   Span::Text("text-left "),
                   Span::Strong(vec![
                     Span::Text("strong-left "),
@@ -628,7 +663,7 @@ mod tests {
                     Span::Text(" strong-right")
                   ]),
                   Span::Text(" text-right")
-                ])
+                ])]
             ))
         );
     }
@@ -636,7 +671,7 @@ mod tests {
     #[test]
     fn test_block_header_field_paragraph() {
         assert_eq!(
-            qwikmark("## [*strong heading*]"),
+            document("## [*strong heading*]"),
             Ok((
                 "",
                 vec![Block::Heading(
@@ -650,7 +685,7 @@ mod tests {
     #[test]
     fn test_block_header_field_paragraph_starting_text() {
         assert_eq!(
-            qwikmark("## header\nnext line [*strong*]\n\nnew paragraph"),
+            document("## header\nnext line [*strong*]\n\nnew paragraph"),
             Ok((
                 "",
                 vec![
@@ -663,6 +698,26 @@ mod tests {
                     ),
                     Block::Paragraph(vec![Span::Text("new paragraph")])
                 ]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_div_w_para_in_div_w_heading() {
+        assert_eq!(
+            document("::: div1\n\n## [*strong heading*]\n\n  ::: div2\n\n  line"),
+            Ok((
+                "",
+                vec![Block::Div(
+                    "div1",
+                    vec![
+                        Block::Heading(
+                            HLevel::H2,
+                            vec![Span::Strong(vec![Span::Text("strong heading")])]
+                        ),
+                        Block::Div("div2", vec![Block::Paragraph(vec![Span::Text("line")])])
+                    ]
+                )]
             ))
         );
     }
