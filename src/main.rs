@@ -371,8 +371,8 @@ enum HLevel {
 fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
     let level = HLEVEL.get(htag).unwrap();
-    let (i, loc) = field(i)?;
-    Ok((i, Block::Heading(*level, loc)))
+    let (i, ss) = spans(i, None)?;
+    Ok((i, Block::Heading(*level, ss)))
 }
 
 // CellEnd      = _{ "|" | &(NEWLINE | EOI) }
@@ -415,7 +415,7 @@ fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
 enum Block<'a> {
     Div(&'a str, Vec<Block<'a>>),
     Quote(Vec<Block<'a>>),
-    Heading(HLevel, &'a str), // Block::Paragraph
+    Heading(HLevel, Vec<Span<'a>>),
     Code(&'a str),
     List(Vec<ListItem<'a>>),
     Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
@@ -649,13 +649,13 @@ mod tests {
     #[test]
     fn test_block_header_field_paragraph() {
         assert_eq!(
-            qwikmark("## header\n[*strong*]"),
+            qwikmark("## [*strong heading*]"),
             Ok((
                 "",
-                vec![
-                    Block::Heading(HLevel::H2, "header"),
-                    Block::Paragraph(vec![Span::Strong(vec![Span::Text("strong")])])
-                ]
+                vec![Block::Heading(
+                    HLevel::H2,
+                    vec![Span::Strong(vec![Span::Text("strong heading")])]
+                )]
             ))
         );
     }
@@ -663,15 +663,18 @@ mod tests {
     #[test]
     fn test_block_header_field_paragraph_starting_text() {
         assert_eq!(
-            qwikmark("## header\nleft [*strong*]"),
+            qwikmark("## header\nnext line [*strong*]\n\nnew paragraph"),
             Ok((
                 "",
                 vec![
-                    Block::Heading(HLevel::H2, "header"),
-                    Block::Paragraph(vec![
-                        Span::Text("left "),
-                        Span::Strong(vec![Span::Text("strong")])
-                    ])
+                    Block::Heading(
+                        HLevel::H2,
+                        vec![
+                            Span::Text("header\nnext line "),
+                            Span::Strong(vec![Span::Text("strong")])
+                        ]
+                    ),
+                    Block::Paragraph(vec![Span::Text("new paragraph")])
                 ]
             ))
         );
