@@ -1,8 +1,8 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
-use nom::character::complete::{anychar, multispace0, newline, space1};
+use nom::character::complete::{anychar, line_ending, multispace0, newline, space1};
 use nom::character::{is_newline, is_space};
-use nom::combinator::opt;
+use nom::combinator::{eof, not, opt, peek};
 use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
@@ -54,7 +54,7 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
     '-' => "Delete",
 };
 #[derive(Debug, PartialEq, Eq)]
-enum Span<'a> {
+pub enum Span<'a> {
     LineBreak(char),
     NBWS(char),
     Esc(char),
@@ -285,11 +285,55 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 // }
 
 // BLOCKS
+// Block = {
+//     Div
+//   | Quote
+//   | Heading
+//   | Code
+//   | ListHead
+//   | Table
+//   | Paragraph
+// }
+#[derive(Debug, PartialEq, Eq)]
+pub enum Block<'a> {
+    // Div(name, [Block])
+    Div(&'a str, Vec<Block<'a>>),
+    Quote(Vec<Block<'a>>),
+    Heading(HLevel, Vec<Span<'a>>),
+    // Code(format, [Span::Text])
+    Code(Option<&'a str>, &'a str),
+    List(Vec<ListItem<'a>>),
+    Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
+    Paragraph(Vec<Span<'a>>),
+}
 
 // CodeStart = { (NEWLINE+ | SOI) ~ PUSH("`"{3, 6}) ~ Attribute* }
 // CodeText  = { NEWLINE ~ (!NEWLINE ~ ANY)* }
 // CodeStop  = { NEWLINE ~ POP }
 // Code      = { CodeStart ~ (!CodeStop ~ CodeText)* ~ (CodeStop | &(NEWLINE | EOI)) }
+fn code<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
+    let (input, sctag) = terminated(take_while_m_n(3, 16, |c| c == '`'), not(tag("`")))(input)?;
+    let (input, format) = opt(field)(input)?;
+    let (input, _) = opt(alt((line_ending, eof)))(input)?;
+    let mut i = input;
+    let mut char_total_length: usize = 0;
+    while i.len() > 0 {
+        if let Ok((i, _)) = tuple((
+            line_ending,
+            tag::<_, &str, ()>(sctag),
+            alt((line_ending, eof)),
+        ))(i)
+        {
+            let (content, _) = input.split_at(char_total_length);
+            return Ok((i, Block::Code(format, content)));
+        }
+        let char_length = i.chars().next().unwrap().len_utf8();
+        (_, i) = i.split_at(char_length);
+        char_total_length += char_length;
+    }
+    let (content, _) = input.split_at(char_total_length);
+    Ok((i, Block::Code(format, content)))
+}
 
 // RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 // RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
@@ -387,26 +431,6 @@ fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     Ok((i, Block::Paragraph(ss)))
 }
 
-// Block = {
-//     Div
-//   | Quote
-//   | Heading
-//   | Code
-//   | ListHead
-//   | Table
-//   | Paragraph
-// }
-#[derive(Debug, PartialEq, Eq)]
-pub enum Block<'a> {
-    Div(&'a str, Vec<Block<'a>>),
-    Quote(Vec<Block<'a>>),
-    Heading(HLevel, Vec<Span<'a>>),
-    Code(&'a str),
-    List(Vec<ListItem<'a>>),
-    Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
-    Paragraph(Vec<Span<'a>>),
-}
-
 // Div = {
 //   (NEWLINE+ | SOI) ~ ":::" ~ Attribute* ~ " " ~ Field ~ &(NEWLINE | EOI) ~
 //   (!(NEWLINE+ ~ ":::") ~ Block)* ~
@@ -419,7 +443,7 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
     loop {
         (i, _) = multispace0(i)?;
         if let Some(name) = div {
-            let (input, div_close) = opt(terminated(tag(":::"), newline))(i)?;
+            let (input, div_close) = opt(terminated(tag(":::"), peek(alt((line_ending, eof)))))(i)?;
             if div_close != None {
                 return Ok((input, vec![Block::Div(name, bs)]));
             }
@@ -435,7 +459,7 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
                 bs.push(d);
             }
         } else {
-            let (input, b) = alt((heading, paragraph))(i)?;
+            let (input, b) = alt((code, heading, paragraph))(i)?;
             i = input;
             bs.push(b);
         }
@@ -717,6 +741,20 @@ mod tests {
                         ),
                         Block::Div("div2", vec![Block::Paragraph(vec![Span::Text("line")])])
                     ]
+                )]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_div_w_code() {
+        assert_eq!(
+            document("::: div1\n\n```code\nline1\n````\nline3\n```\n\n:::"),
+            Ok((
+                "",
+                vec![Block::Div(
+                    "div1",
+                    vec![Block::Code(Some("code"), "line1\n````\nline3")]
                 )]
             ))
         );
