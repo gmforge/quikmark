@@ -27,77 +27,6 @@ use phf::phf_map;
 
 // SPANS
 
-// Char      =  { !NEWLINE ~ "\\"? ~ ANY }
-// Span      =  {
-//     Break
-//   | Raw
-//   | HashTag
-//   | Link
-//   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
-//   | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
-//   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
-//   | Char
-//   | NEWLINE ~ !NEWLINE
-// }
-// TODO: Look at turn spans function signature
-//   from (input: &str, closer: Option<&str>)
-//     to (input: &str, closer: &str)
-//   where starting closer as "" happens to also be the same as eof/eom
-fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Vec<Span<'a>>> {
-    let mut ss = Vec::new();
-    let mut i = input;
-    // Loop through text until reach two newlines
-    // or in future matching valid list item.
-    // Automatically collect breaks and escaped char
-    // Also turn escaped spaces into non-breaking spaces
-    let mut text_start = input;
-    let mut char_total_length: usize = 0;
-    let mut trim_closer = false;
-    while i != "" {
-        // println!("input: {:?}, text_start: {:?}", i, text_start);
-        if let Some(closer) = closer {
-            if i.starts_with(closer) {
-                trim_closer = true;
-                break;
-            }
-        }
-        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
-            if char_total_length > 0 {
-                let (text, _) = text_start.split_at(char_total_length);
-                ss.push(Span::Text(text));
-                text_start = input;
-                char_total_length = 0;
-            } else if closer == None {
-                text_start = input;
-            }
-            i = input;
-            // End of Mark (EOM) Indicates a common ending point
-            // such as an end to a block such as a paragraph or
-            // that the file input as ended.
-            if s == Span::EOM {
-                break;
-            }
-
-            ss.push(s);
-        } else {
-            let char_length = i.chars().next().unwrap().len_utf8();
-            (_, i) = i.split_at(char_length);
-            char_total_length += char_length;
-        }
-    }
-    if char_total_length > 0 {
-        let (text, i) = text_start.split_at(char_total_length);
-        ss.push(Span::Text(text));
-        text_start = i;
-    }
-    if trim_closer {
-        if let Some(closer) = closer {
-            (_, text_start) = text_start.split_at(closer.len());
-        }
-    }
-    Ok((text_start, ss))
-}
-
 // Strong      =  { "*" }
 // Emphasis    =  { "_" }
 // Superscript =  { "^" }
@@ -266,6 +195,77 @@ fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, l) = preceded(tag("[["), locator)(input)?;
     let (i, ss) = spans(i, Some("]]"))?;
     Ok((i, Span::Link(l, ss)))
+}
+
+// Char      =  { !NEWLINE ~ "\\"? ~ ANY }
+// Span      =  {
+//     Break
+//   | Raw
+//   | HashTag
+//   | Link
+//   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
+//   | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
+//   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
+//   | Char
+//   | NEWLINE ~ !NEWLINE
+// }
+// TODO: Look at turn spans function signature
+//   from (input: &str, closer: Option<&str>)
+//     to (input: &str, closer: &str)
+//   where starting closer as "" happens to also be the same as eof/eom
+fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Vec<Span<'a>>> {
+    let mut ss = Vec::new();
+    let mut i = input;
+    // Loop through text until reach two newlines
+    // or in future matching valid list item.
+    // Automatically collect breaks and escaped char
+    // Also turn escaped spaces into non-breaking spaces
+    let mut text_start = input;
+    let mut char_total_length: usize = 0;
+    let mut trim_closer = false;
+    while i != "" {
+        // println!("input: {:?}, text_start: {:?}", i, text_start);
+        if let Some(closer) = closer {
+            if i.starts_with(closer) {
+                trim_closer = true;
+                break;
+            }
+        }
+        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
+            if char_total_length > 0 {
+                let (text, _) = text_start.split_at(char_total_length);
+                ss.push(Span::Text(text));
+                text_start = input;
+                char_total_length = 0;
+            } else if closer == None {
+                text_start = input;
+            }
+            i = input;
+            // End of Mark (EOM) Indicates a common ending point
+            // such as an end to a block such as a paragraph or
+            // that the file input as ended.
+            if s == Span::EOM {
+                break;
+            }
+
+            ss.push(s);
+        } else {
+            let char_length = i.chars().next().unwrap().len_utf8();
+            (_, i) = i.split_at(char_length);
+            char_total_length += char_length;
+        }
+    }
+    if char_total_length > 0 {
+        let (text, i) = text_start.split_at(char_total_length);
+        ss.push(Span::Text(text));
+        text_start = i;
+    }
+    if trim_closer {
+        if let Some(closer) = closer {
+            (_, text_start) = text_start.split_at(closer.len());
+        }
+    }
+    Ok((text_start, ss))
 }
 
 // LineHash = { Edge ~ Hash ~ Location }
