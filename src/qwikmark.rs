@@ -1,18 +1,13 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
-use nom::character::complete::{anychar, line_ending, multispace0, newline, space1};
-use nom::character::{is_newline, is_space};
+use nom::character::complete::{alpha1, anychar, digit1, line_ending, multispace0, space0, space1};
+use nom::character::{is_digit, is_newline, is_space};
 use nom::combinator::{eof, not, opt, peek};
+use nom::multi::many0;
 use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
 
-// Algorithm
-//   1) Have stack for blocks we call context where each block has their own stack for spans.
-//   2) Scan until find a qwikmark boundary and the push/pop Block and Span content.
-//      NOTE: Will need ability to read stack from bottom up to determin if Block context
-//      and thus Scan stack ends.
-// Thus could have root > list > quote > list > span
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
 // a section of the document and know that any previous text before the start point will not
@@ -27,11 +22,81 @@ use phf::phf_map;
 //   2) If word or opening bracket tag encountered as next character, start edge tag content
 //   3) If another edge tag then stack until find word or opening bracket.
 //
-// Text is the default span/tag that joins char runs
-
-// Document -> Block -> Paragragh(If not a block then paragraph)/Text(Collect Non-Spans) -> Span
+// Block::Paragraph is the default Block that captures text in te form of Spans
+// Span::Text is the default span/tag that joins char runs
 
 // SPANS
+
+// Char      =  { !NEWLINE ~ "\\"? ~ ANY }
+// Span      =  {
+//     Break
+//   | Raw
+//   | HashTag
+//   | Link
+//   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
+//   | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
+//   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
+//   | Char
+//   | NEWLINE ~ !NEWLINE
+// }
+// TODO: Look at turn spans function signature
+//   from (input: &str, closer: Option<&str>)
+//     to (input: &str, closer: &str)
+//   where starting closer as "" happens to also be the same as eof/eom
+fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Vec<Span<'a>>> {
+    let mut ss = Vec::new();
+    let mut i = input;
+    // Loop through text until reach two newlines
+    // or in future matching valid list item.
+    // Automatically collect breaks and escaped char
+    // Also turn escaped spaces into non-breaking spaces
+    let mut text_start = input;
+    let mut char_total_length: usize = 0;
+    let mut trim_closer = false;
+    while i != "" {
+        // println!("input: {:?}, text_start: {:?}", i, text_start);
+        if let Some(closer) = closer {
+            if i.starts_with(closer) {
+                trim_closer = true;
+                break;
+            }
+        }
+        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
+            if char_total_length > 0 {
+                let (text, _) = text_start.split_at(char_total_length);
+                ss.push(Span::Text(text));
+                text_start = input;
+                char_total_length = 0;
+            } else if closer == None {
+                text_start = input;
+            }
+            i = input;
+            // End of Mark (EOM) Indicates a common ending point
+            // such as an end to a block such as a paragraph or
+            // that the file input as ended.
+            if s == Span::EOM {
+                break;
+            }
+
+            ss.push(s);
+        } else {
+            let char_length = i.chars().next().unwrap().len_utf8();
+            (_, i) = i.split_at(char_length);
+            char_total_length += char_length;
+        }
+    }
+    if char_total_length > 0 {
+        let (text, i) = text_start.split_at(char_total_length);
+        ss.push(Span::Text(text));
+        text_start = i;
+    }
+    if trim_closer {
+        if let Some(closer) = closer {
+            (_, text_start) = text_start.split_at(closer.len());
+        }
+    }
+    Ok((text_start, ss))
+}
 
 // Strong      =  { "*" }
 // Emphasis    =  { "_" }
@@ -203,73 +268,6 @@ fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
     Ok((i, Span::Link(l, ss)))
 }
 
-// Char      =  { !NEWLINE ~ "\\"? ~ ANY }
-// Span      =  {
-//     Break
-//   | Raw
-//   | HashTag
-//   | Link
-//   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
-//   | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
-//   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
-//   | Char
-//   | NEWLINE ~ !NEWLINE
-// }
-fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Vec<Span<'a>>> {
-    let mut ss = Vec::new();
-    let mut i = input;
-    // Loop through text until reach two newlines
-    // or in future matching valid list item.
-    // Automatically collect breaks and escaped char
-    // Also turn escaped spaces into non-breaking spaces
-    let mut text_start = input;
-    let mut char_total_length: usize = 0;
-    let mut trim_closer = false;
-    while i != "" {
-        // println!("input: {:?}, text_start: {:?}", i, text_start);
-        if let Some(closer) = closer {
-            if i.starts_with(closer) {
-                trim_closer = true;
-                break;
-            }
-        }
-        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
-            if char_total_length > 0 {
-                let (text, _) = text_start.split_at(char_total_length);
-                ss.push(Span::Text(text));
-                text_start = input;
-                char_total_length = 0;
-            } else if closer == None {
-                text_start = input;
-            }
-            i = input;
-            // End of Mark (EOM) Indicates a common ending point
-            // such as an end to a block such as a paragraph or
-            // that the file input as ended.
-            if s == Span::EOM {
-                break;
-            }
-
-            ss.push(s);
-        } else {
-            let char_length = i.chars().next().unwrap().len_utf8();
-            (_, i) = i.split_at(char_length);
-            char_total_length += char_length;
-        }
-    }
-    if char_total_length > 0 {
-        let (text, i) = text_start.split_at(char_total_length);
-        ss.push(Span::Text(text));
-        text_start = i;
-    }
-    if trim_closer {
-        if let Some(closer) = closer {
-            (_, text_start) = text_start.split_at(closer.len());
-        }
-    }
-    Ok((text_start, ss))
-}
-
 // LineHash = { Edge ~ Hash ~ Location }
 // LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY }
 // LineEnd  = { "|" | NEWLINE | EOI }
@@ -285,6 +283,7 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
 // }
 
 // BLOCKS
+
 // Block = {
 //     Div
 //   | Quote
@@ -305,6 +304,37 @@ pub enum Block<'a> {
     List(Vec<ListItem<'a>>),
     Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
     Paragraph(Vec<Span<'a>>),
+}
+
+// H1      = { "#" }
+// H2      = { "##" }
+// H3      = { "###" }
+// H4      = { "####" }
+// H5      = { "#####" }
+// H6      = { "######" }
+static HLEVEL: phf::Map<&'static str, HLevel> = phf_map! {
+    "#" => HLevel::H1,
+    "##" => HLevel::H2,
+    "###" => HLevel::H3,
+    "####" => HLevel::H4,
+    "#####" => HLevel::H5,
+    "######" => HLevel::H6,
+};
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum HLevel {
+    H1 = 1,
+    H2,
+    H3,
+    H4,
+    H5,
+    H6,
+}
+// Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
+fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
+    let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
+    let level = HLEVEL.get(htag).unwrap();
+    let (i, ss) = spans(i, None)?;
+    Ok((i, Block::Heading(*level, ss)))
 }
 
 // CodeStart = { (NEWLINE+ | SOI) ~ PUSH("`"{3, 6}) ~ Attribute* }
@@ -337,30 +367,15 @@ fn code<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
 
 // RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 // RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
-// Definition = { ": " ~ Field }
-// Unordered  = { "-" | "+" | "*" }
-// Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
-// ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..] ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem)+ }
-// ListItem   = { Span+ ~ ListBlock* }
-// ListBlock  = {
-//   NEWLINE+ ~
-//   PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition) ~ (" " | NEWLINE) ~ ListItem ~
-//   (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~
-//   DROP
-// }
-// NOTE: Block::List will serve as both ListHead and ListBlock
 #[derive(Debug, PartialEq, Eq)]
 pub enum Enumerator<'a> {
-    AlphaLower(&'a str), // is_alpha
-    AlphaUpper(&'a str),
-    DigitLower(&'a str),
-    DigitUpper(&'a str),
-    RomanLower(&'a str), // is_a("ivxlcdm")
-    RomanUpper(&'a str), // is_a("IVXLCDM")
+    // is_alpha includes lower and upper cases along with Roman is_a("ivxlcdm") and is_a("IVXLCDM")
+    Alpha(&'a str),
+    Digit(&'a str),
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Index<'a> {
-    Definition(&'a str),     // Locator
+    Definition(&'a str),     // : <<Locator>>
     Ordered(Enumerator<'a>), // (e), e), e.
     Unordered(&'a str),      // -, +, *
 }
@@ -370,38 +385,127 @@ pub struct ListItem<'a>(
     // Block::Paragraph(Vec<Span<'a>>),
     Block<'a>,
     // Block::List(Vec<ListItem<'a>>),
-    Vec<Block<'a>>,
+    Block<'a>,
 );
-
-// H1      = { "#" }
-// H2      = { "##" }
-// H3      = { "###" }
-// H4      = { "####" }
-// H5      = { "#####" }
-// H6      = { "######" }
-static HLEVEL: phf::Map<&'static str, HLevel> = phf_map! {
-    "#" => HLevel::H1,
-    "##" => HLevel::H2,
-    "###" => HLevel::H3,
-    "####" => HLevel::H4,
-    "#####" => HLevel::H5,
-    "######" => HLevel::H6,
-};
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum HLevel {
-    H1 = 1,
-    H2,
-    H3,
-    H4,
-    H5,
-    H6,
+// Definition = { ": " ~ Field }
+fn definition<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+    let (i, (_, _, d)) = tuple((tag(":"), space1, field))(input)?;
+    Ok((i, Index::Definition(d)))
 }
-// Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
-fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
-    let level = HLEVEL.get(htag).unwrap();
-    let (i, ss) = spans(i, None)?;
-    Ok((i, Block::Heading(*level, ss)))
+// Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
+fn ordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+    let (i, (stag, o, etag)) = tuple((
+        opt(tag("(")),
+        alt((alpha1, digit1)),
+        alt((tag(")"), tag("."))),
+    ))(input)?;
+    if stag == Some("(") && etag != ")" {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Alt,
+        )));
+    }
+    if is_digit(o.bytes().next().unwrap()) {
+        Ok((i, Index::Ordered(Enumerator::Digit(o))))
+    } else {
+        Ok((i, Index::Ordered(Enumerator::Alpha(o))))
+    }
+}
+// Unordered  = { "-" | "+" | "*" }
+fn unordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+    let (i, u) = alt((tag("*"), tag("-"), tag("+")))(input)?;
+    Ok((i, Index::Unordered(u)))
+}
+fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>> {
+    if let (input, Some((_, d, idx, _))) = opt(tuple((
+        many0(line_ending),
+        space0,
+        alt((unordered, ordered, definition)),
+        space1,
+    )))(input)?
+    {
+        Ok((input, Some((d, idx))))
+    } else {
+        Ok((input, None))
+    }
+}
+// ListBlock  = {
+//   NEWLINE+ ~
+//   PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition)
+//                                  ~ (" " | NEWLINE) ~ ListItem ~
+//   (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~
+//   DROP
+// }
+fn list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
+    let mut i = input;
+    if let (input, Some((d, index))) = list_tag(i)? {
+        if d.len() <= depth.len() {
+            return Ok((i, None));
+        }
+        let mut lis = Vec::new();
+        i = input;
+        let mut idx = index;
+        loop {
+            let (input, li) = list_item(i, d, idx)?;
+            i = input;
+            lis.push(li);
+            // println!("item: {:?}, depth: '{:?}', input: {:?}", li, d,  input);
+            if let (input, Some((depth, index))) = list_tag(i)? {
+                if d != depth {
+                    break;
+                }
+                idx = index;
+                i = input;
+            } else {
+                break;
+            }
+        }
+        Ok((i, Some(Block::List(lis))))
+    } else {
+        Ok((input, None))
+    }
+}
+// ListItem   = { Span+ ~ ListBlock* }
+fn list_item<'a>(
+    input: &'a str,
+    depth: &'a str,
+    index: Index<'a>,
+) -> IResult<&'a str, ListItem<'a>> {
+    // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
+    // Or if needs to fail wrap in opt(spans...)
+    let (input, ss) = spans(input, None)?;
+    if let (input, Some(lb)) = list_block(input, depth)? {
+        Ok((input, ListItem(index, Block::Paragraph(ss), lb)))
+    } else {
+        Ok((
+            input,
+            ListItem(index, Block::Paragraph(ss), Block::List(vec![])),
+        ))
+    }
+}
+// ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
+//                ~ (Unordered | Ordered | Definition)
+//                ~ (" " | NEWLINE) ~ ListItem)+ }
+// NOTE: Block::List will serve as both ListHead and ListBlock
+fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
+    let mut lis = Vec::new();
+    let mut i = input;
+    while let (input, Some((d, idx))) = list_tag(i)? {
+        if d != "" {
+            break;
+        }
+        let (input, li) = list_item(input, "", idx)?;
+        i = input;
+        lis.push(li);
+    }
+    if lis.len() > 0 {
+        Ok((i, Block::List(lis)))
+    } else {
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Alt,
+        )))
+    }
 }
 
 // CellEnd      = _{ "|" | &(NEWLINE | EOI) }
@@ -459,7 +563,7 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
                 bs.push(d);
             }
         } else {
-            let (input, b) = alt((code, heading, paragraph))(i)?;
+            let (input, b) = alt((code, heading, list, paragraph))(i)?;
             i = input;
             bs.push(b);
         }
@@ -756,6 +860,53 @@ mod tests {
                     "div1",
                     vec![Block::Code(Some("code"), "line1\n````\nline3")]
                 )]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_unordered_list() {
+        assert_eq!(
+            document("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
+            Ok((
+                "",
+                vec![Block::List(vec![
+                    ListItem(
+                        Index::Unordered("-"),
+                        Block::Paragraph(vec![Span::Text("l1")]),
+                        Block::List(vec![])
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        Block::Paragraph(vec![Span::Text("l2")]),
+                        Block::List(vec![
+                            ListItem(
+                                Index::Unordered("-"),
+                                Block::Paragraph(vec![Span::Text("l2,1")]),
+                                Block::List(vec![])
+                            ),
+                            ListItem(
+                                Index::Unordered("-"),
+                                Block::Paragraph(vec![Span::Text("l2,2")]),
+                                Block::List(vec![ListItem(
+                                    Index::Unordered("-"),
+                                    Block::Paragraph(vec![Span::Text("l2,2,1")]),
+                                    Block::List(vec![])
+                                )])
+                            ),
+                            ListItem(
+                                Index::Unordered("-"),
+                                Block::Paragraph(vec![Span::Text("l2,3")]),
+                                Block::List(vec![])
+                            )
+                        ])
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        Block::Paragraph(vec![Span::Text("l3")]),
+                        Block::List(vec![])
+                    )
+                ])]
             ))
         );
     }
