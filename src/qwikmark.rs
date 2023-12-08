@@ -29,15 +29,6 @@ use phf::phf_map;
 
 // SPANS
 
-// Strong      =  { "*" }
-// Emphasis    =  { "_" }
-// Superscript =  { "^" }
-// Subscript   =  { "~" }
-// Hash        =  { "#" }
-// Verbatim    =  { "`"+ }
-// Highlight   =  { "=" }
-// Insert      =  { "+" }
-// Delete      =  { "-" }
 static SPANS: phf::Map<char, &'static str> = phf_map! {
     '*' => "Strong",
     '_' => "Emphasis",
@@ -49,6 +40,16 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
     '+' => "Insert",
     '-' => "Delete",
 };
+
+// Strong      =  { "*" }
+// Emphasis    =  { "_" }
+// Superscript =  { "^" }
+// Subscript   =  { "~" }
+// Hash        =  { "#" }
+// Verbatim    =  { "`"+ }
+// Highlight   =  { "=" }
+// Insert      =  { "+" }
+// Delete      =  { "-" }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Span<'a> {
     LineBreak(char),
@@ -322,6 +323,7 @@ static HLEVEL: phf::Map<&'static str, HLevel> = phf_map! {
     "#####" => HLevel::H5,
     "######" => HLevel::H6,
 };
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum HLevel {
     H1 = 1,
@@ -331,6 +333,7 @@ pub enum HLevel {
     H5,
     H6,
 }
+
 // Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
 fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
@@ -375,12 +378,14 @@ pub enum Enumerator<'a> {
     Alpha(&'a str),
     Digit(&'a str),
 }
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Index<'a> {
     Definition(&'a str),     // : <<Locator>>
     Ordered(Enumerator<'a>), // (e), e), e.
     Unordered(&'a str),      // -, +, *
 }
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ListItem<'a>(
     Index<'a>,
@@ -389,11 +394,13 @@ pub struct ListItem<'a>(
     // Block::List(Vec<ListItem<'a>>),
     Block<'a>,
 );
+
 // Definition = { ": " ~ Field }
 fn definition<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     let (i, d) = preceded(tuple((tag(":"), space1)), not_line_ending)(input)?;
     Ok((i, Index::Definition(d)))
 }
+
 // Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
 fn ordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     let (i, (stag, o, etag)) = tuple((
@@ -413,11 +420,13 @@ fn ordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
         Ok((i, Index::Ordered(Enumerator::Alpha(o))))
     }
 }
+
 // Unordered  = { "-" | "+" | "*" }
 fn unordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     let (i, u) = alt((tag("*"), tag("-"), tag("+")))(input)?;
     Ok((i, Index::Unordered(u)))
 }
+
 fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>> {
     if let (input, Some((_, d, idx, _))) = opt(tuple((
         many0(line_ending),
@@ -431,6 +440,7 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
         Ok((input, None))
     }
 }
+
 // ListBlock  = {
 //   NEWLINE+ ~
 //   PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition)
@@ -462,6 +472,7 @@ fn list_block<'a>(
     }
     Ok((i, Some(Block::List(lis))))
 }
+
 fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
     if let (i, Some((d, index))) = list_tag(input)? {
         if d.len() <= depth.len() {
@@ -492,6 +503,7 @@ fn list_item<'a>(
         ))
     }
 }
+
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
 //                ~ (Unordered | Ordered | Definition)
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
