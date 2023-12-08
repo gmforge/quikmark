@@ -1,6 +1,8 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
-use nom::character::complete::{alpha1, anychar, digit1, line_ending, multispace0, space0, space1};
+use nom::character::complete::{
+    alpha1, anychar, digit1, line_ending, multispace0, not_line_ending, space0, space1,
+};
 use nom::character::{is_digit, is_newline, is_space};
 use nom::combinator::{eof, not, opt, peek};
 use nom::multi::many0;
@@ -389,7 +391,7 @@ pub struct ListItem<'a>(
 );
 // Definition = { ": " ~ Field }
 fn definition<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
-    let (i, (_, _, d)) = tuple((tag(":"), space1, field))(input)?;
+    let (i, d) = preceded(tuple((tag(":"), space1)), not_line_ending)(input)?;
     Ok((i, Index::Definition(d)))
 }
 // Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
@@ -421,7 +423,7 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
         many0(line_ending),
         space0,
         alt((unordered, ordered, definition)),
-        space1,
+        alt((space1, line_ending)),
     )))(input)?
     {
         Ok((input, Some((d, idx))))
@@ -909,5 +911,57 @@ mod tests {
                 ])]
             ))
         );
+    }
+
+    #[test]
+    fn test_block_ordered_list() {
+        assert_eq!(
+            document("a) l1\n\n(B) l2\n\n  1. l2,1"),
+            Ok((
+                "",
+                vec![Block::List(vec![
+                    ListItem(
+                        Index::Ordered(Enumerator::Alpha("a")),
+                        Block::Paragraph(vec![Span::Text("l1")]),
+                        Block::List(vec![])
+                    ),
+                    ListItem(
+                        Index::Ordered(Enumerator::Alpha("B")),
+                        Block::Paragraph(vec![Span::Text("l2")]),
+                        Block::List(vec![ListItem(
+                            Index::Ordered(Enumerator::Digit("1")),
+                            Block::Paragraph(vec![Span::Text("l2,1")]),
+                            Block::List(vec![])
+                        )])
+                    )
+                ])]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_block_definition_list() {
+        assert_eq!(
+            document(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
+            Ok((
+                "",
+                vec![Block::List(vec![
+                    ListItem(
+                        Index::Definition("ab"),
+                        Block::Paragraph(vec![Span::Text("  alpha")]),
+                        Block::List(vec![])
+                    ),
+                    ListItem(
+                        Index::Definition("12"),
+                        Block::Paragraph(vec![Span::Text("  digit")]),
+                        Block::List(vec![ListItem(
+                            Index::Definition("iv"),
+                            Block::Paragraph(vec![Span::Text("    roman")]),
+                            Block::List(vec![])
+                        )])
+                    )
+                ])]
+            ))
+        )
     }
 }
