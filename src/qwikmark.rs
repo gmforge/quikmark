@@ -462,7 +462,7 @@ fn list_block<'a>(
     }
     Ok((i, Some(Block::List(lis))))
 }
-fn inner_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
+fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
     if let (i, Some((d, index))) = list_tag(input)? {
         if d.len() <= depth.len() {
             Ok((input, None))
@@ -483,7 +483,7 @@ fn list_item<'a>(
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
     let (input, ss) = spans(input, None)?;
-    if let (input, Some(lb)) = inner_list_block(input, depth)? {
+    if let (input, Some(lb)) = nested_list_block(input, depth)? {
         Ok((input, ListItem(index, Block::Paragraph(ss), lb)))
     } else {
         Ok((
@@ -496,28 +496,17 @@ fn list_item<'a>(
 //                ~ (Unordered | Ordered | Definition)
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
 fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    let mut lis = Vec::new();
-    let mut i = input;
-    loop {
-        if let (input, Some((d, idx))) = list_tag(i)? {
-            if d != "" {
-                break;
+    if let (i, Some((d, index))) = list_tag(input)? {
+        if d == "" {
+            if let (i, Some(lb)) = list_block(i, d, index)? {
+                return Ok((i, lb));
             }
-            let (input, li) = list_item(input, "", idx)?;
-            i = input;
-            lis.push(li);
-        } else {
-            break;
         }
     }
-    if lis.len() > 0 {
-        Ok((i, Block::List(lis)))
-    } else {
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Alt,
-        )))
-    }
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Alt,
+    )))
 }
 
 // CellEnd      = _{ "|" | &(NEWLINE | EOI) }
