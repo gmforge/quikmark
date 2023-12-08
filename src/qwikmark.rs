@@ -438,35 +438,42 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
 //   (PEEK[..] ~ (Unordered | Ordered) ~ " " ~ ListItem)* ~
 //   DROP
 // }
-fn list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
+fn list_block<'a>(
+    input: &'a str,
+    depth: &'a str,
+    index: Index<'a>,
+) -> IResult<&'a str, Option<Block<'a>>> {
+    let mut lis = Vec::new();
     let mut i = input;
-    if let (input, Some((d, index))) = list_tag(i)? {
-        if d.len() <= depth.len() {
-            return Ok((i, None));
-        }
-        let mut lis = Vec::new();
+    let mut idx = index;
+    loop {
+        let (input, li) = list_item(i, depth, idx)?;
         i = input;
-        let mut idx = index;
-        loop {
-            let (input, li) = list_item(i, d, idx)?;
-            i = input;
-            lis.push(li);
-            // println!("item: {:?}, depth: '{:?}', input: {:?}", li, d,  input);
-            if let (input, Some((depth, index))) = list_tag(i)? {
-                if d != depth {
-                    break;
-                }
-                idx = index;
-                i = input;
-            } else {
+        lis.push(li);
+        if let (input, Some((d, index))) = list_tag(i)? {
+            if d != depth {
                 break;
             }
+            idx = index;
+            i = input;
+        } else {
+            break;
         }
-        Ok((i, Some(Block::List(lis))))
+    }
+    Ok((i, Some(Block::List(lis))))
+}
+fn inner_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
+    if let (i, Some((d, index))) = list_tag(input)? {
+        if d.len() <= depth.len() {
+            Ok((input, None))
+        } else {
+            list_block(i, d, index)
+        }
     } else {
         Ok((input, None))
     }
 }
+
 // ListItem   = { Span+ ~ ListBlock* }
 fn list_item<'a>(
     input: &'a str,
@@ -476,7 +483,7 @@ fn list_item<'a>(
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
     let (input, ss) = spans(input, None)?;
-    if let (input, Some(lb)) = list_block(input, depth)? {
+    if let (input, Some(lb)) = inner_list_block(input, depth)? {
         Ok((input, ListItem(index, Block::Paragraph(ss), lb)))
     } else {
         Ok((
@@ -488,17 +495,20 @@ fn list_item<'a>(
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
 //                ~ (Unordered | Ordered | Definition)
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
-// NOTE: Block::List will serve as both ListHead and ListBlock
 fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let mut lis = Vec::new();
     let mut i = input;
-    while let (input, Some((d, idx))) = list_tag(i)? {
-        if d != "" {
+    loop {
+        if let (input, Some((d, idx))) = list_tag(i)? {
+            if d != "" {
+                break;
+            }
+            let (input, li) = list_item(input, "", idx)?;
+            i = input;
+            lis.push(li);
+        } else {
             break;
         }
-        let (input, li) = list_item(input, "", idx)?;
-        i = input;
-        lis.push(li);
     }
     if lis.len() > 0 {
         Ok((i, Block::List(lis)))
