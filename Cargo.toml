@@ -13,4 +13,7 @@ criterion = "0.5.1"
 
 [[bench]]
 name = "parse"
-hardness = false
+harness = false
+
+[profile.bench]
+debug = true
