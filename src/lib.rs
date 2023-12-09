@@ -1,5 +1,3 @@
-use std::f32::consts;
-
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
