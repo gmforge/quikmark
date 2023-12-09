@@ -1,6 +1,3 @@
-mod lib;
-
-use lib::document;
 use std::{env, error::Error, fs};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -10,7 +7,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let name = args[1].clone();
     let contents = fs::read_to_string(name)?;
-    let doc = document(&contents);
+    let doc = qwikmark::document(&contents);
     println!("{:?}", doc);
     Ok(())
 }
