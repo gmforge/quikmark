@@ -1,10 +1,12 @@
+use std::f32::consts;
+
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
     alpha1, anychar, digit1, line_ending, multispace0, not_line_ending, space0, space1,
 };
 use nom::character::{is_digit, is_newline, is_space};
-use nom::combinator::{eof, not, opt, peek};
+use nom::combinator::{cond, eof, not, opt, peek};
 use nom::multi::many0;
 use nom::sequence::{preceded, terminated, tuple};
 use nom::IResult;
@@ -164,7 +166,7 @@ fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
 fn bracket(input: &str) -> IResult<&str, Span> {
     let (i, t) = preceded(tag("["), is_a("*_=+-^~"))(input)?;
     let closing_tag = t.to_string() + "]";
-    let (i, ss) = spans(i, Some(&closing_tag))?;
+    let (i, ss) = spans(i, Some(&closing_tag), false)?;
     match t {
         "*" => Ok((i, Span::Strong(ss))),
         "_" => Ok((i, Span::Emphasis(ss))),
@@ -196,7 +198,7 @@ fn locator(input: &str) -> IResult<&str, &str> {
 // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
 fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, l) = preceded(tag("[["), locator)(input)?;
-    let (i, ss) = spans(i, Some("]]"))?;
+    let (i, ss) = spans(i, Some("]]"), false)?;
     Ok((i, Span::Link(l, ss)))
 }
 
@@ -216,7 +218,11 @@ fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
 //   from (input: &str, closer: Option<&str>)
 //     to (input: &str, closer: &str)
 //   where starting closer as "" happens to also be the same as eof/eom
-fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Vec<Span<'a>>> {
+fn spans<'a, 'b>(
+    input: &'a str,
+    closer: Option<&'b str>,
+    inlist: bool,
+) -> IResult<&'a str, Vec<Span<'a>>> {
     let mut ss = Vec::new();
     let mut i = input;
     // Loop through text until reach two newlines
@@ -233,6 +239,9 @@ fn spans<'a, 'b>(input: &'a str, closer: Option<&'b str>) -> IResult<&'a str, Ve
                 trim_closer = true;
                 break;
             }
+        }
+        if let Ok((_, Some(Span::EOM))) = cond(inlist, list_eom)(i) {
+            break;
         }
         if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
             if char_total_length > 0 {
@@ -338,7 +347,7 @@ pub enum HLevel {
 fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
     let level = HLEVEL.get(htag).unwrap();
-    let (i, ss) = spans(i, None)?;
+    let (i, ss) = spans(i, None, false)?;
     Ok((i, Block::Heading(*level, ss)))
 }
 
@@ -441,6 +450,11 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
     }
 }
 
+fn list_eom<'a>(input: &'a str) -> IResult<&'a str, Span<'a>> {
+    let _ = peek(tuple((line_ending, space0, list_tag)))(input)?;
+    Ok((input, Span::EOM))
+}
+
 // ListBlock  = {
 //   NEWLINE+ ~
 //   PEEK[..] ~ PUSH((" " | "\t")+) ~ (Unordered | Ordered | Definition)
@@ -493,7 +507,7 @@ fn list_item<'a>(
 ) -> IResult<&'a str, ListItem<'a>> {
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
-    let (input, ss) = spans(input, None)?;
+    let (input, ss) = spans(input, None, true)?;
     if let (input, Some(lb)) = nested_list_block(input, depth)? {
         Ok((input, ListItem(index, Block::Paragraph(ss), lb)))
     } else {
@@ -544,7 +558,7 @@ pub enum Align {
 
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
 fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    let (i, ss) = spans(input, None)?;
+    let (i, ss) = spans(input, None, false)?;
     Ok((i, Block::Paragraph(ss)))
 }
 
@@ -881,6 +895,53 @@ mod tests {
     fn test_block_unordered_list() {
         assert_eq!(
             document("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
+            Ok((
+                "",
+                vec![Block::List(vec![
+                    ListItem(
+                        Index::Unordered("-"),
+                        Block::Paragraph(vec![Span::Text("l1")]),
+                        Block::List(vec![])
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        Block::Paragraph(vec![Span::Text("l2")]),
+                        Block::List(vec![
+                            ListItem(
+                                Index::Unordered("-"),
+                                Block::Paragraph(vec![Span::Text("l2,1")]),
+                                Block::List(vec![])
+                            ),
+                            ListItem(
+                                Index::Unordered("-"),
+                                Block::Paragraph(vec![Span::Text("l2,2")]),
+                                Block::List(vec![ListItem(
+                                    Index::Unordered("-"),
+                                    Block::Paragraph(vec![Span::Text("l2,2,1")]),
+                                    Block::List(vec![])
+                                )])
+                            ),
+                            ListItem(
+                                Index::Unordered("-"),
+                                Block::Paragraph(vec![Span::Text("l2,3")]),
+                                Block::List(vec![])
+                            )
+                        ])
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        Block::Paragraph(vec![Span::Text("l3")]),
+                        Block::List(vec![])
+                    )
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_unordered_list_single_newline() {
+        assert_eq!(
+            document("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
             Ok((
                 "",
                 vec![Block::List(vec![
