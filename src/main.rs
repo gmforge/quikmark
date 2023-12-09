@@ -1,6 +1,6 @@
-mod qwikmark;
+mod lib;
 
-use qwikmark::document;
+use lib::document;
 use std::{env, error::Error, fs};
 
 fn main() -> Result<(), Box<dyn Error>> {
