@@ -1,12 +1,12 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, anychar, digit1, line_ending, multispace0, not_line_ending, space0, space1,
+    alpha1, anychar, char, digit1, line_ending, multispace0, not_line_ending, space0, space1,
 };
 use nom::character::{is_digit, is_newline, is_space};
-use nom::combinator::{cond, eof, not, opt, peek};
+use nom::combinator::{consumed, eof, not, opt, peek};
 use nom::multi::many0;
-use nom::sequence::{preceded, terminated, tuple};
+use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
 
@@ -239,7 +239,7 @@ fn spans<'a, 'b>(
             }
         }
         if inlist {
-            if let Ok((_, Some(_))) = peek(list_singleline_tag)(i) {
+            if let Ok((_, true)) = is_list_singleline_tag(i) {
                 break;
             }
         }
@@ -390,24 +390,37 @@ pub enum Enumerator<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Index<'a> {
-    Definition(&'a str),     // : <<Locator>>
-    Ordered(Enumerator<'a>), // (e), e), e.
-    Unordered(&'a str),      // -, +, *
+    // : <<Locator>>
+    Definition(&'a str),
+    // (e), e), e.
+    Ordered(Enumerator<'a>),
+    // - [ ]
+    // contents may be a checkbox indicated with space or x,
+    // or input field indicated with digit1 or ratio (digit1:digit1)
+    Task(&'a str),
+    // -, +, *
+    Unordered(&'a str),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ListItem<'a>(
     Index<'a>,
     // Block::Paragraph(Vec<Span<'a>>),
-    Block<'a>,
+    Vec<Span<'a>>,
     // Block::List(Vec<ListItem<'a>>),
-    Block<'a>,
+    Option<Block<'a>>,
 );
 
 // Definition = { ": " ~ Field }
 fn definition<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     let (i, d) = preceded(tuple((tag(":"), space1)), not_line_ending)(input)?;
     Ok((i, Index::Definition(d)))
+}
+
+// Definition = { ": " ~ Field }
+fn definition_simple<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+    let (i, _d) = tag(":")(input)?;
+    Ok((i, Index::Definition("")))
 }
 
 // Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
@@ -430,6 +443,20 @@ fn ordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     }
 }
 
+fn ratio<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+    let (i, (r, _)) = consumed(separated_pair(digit1, char(':'), digit1))(input)?;
+    Ok((i, r))
+}
+
+fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+    let (i, t) = delimited(
+        tag("- ["),
+        alt((tag(" "), tag("x"), ratio, digit1)),
+        tag("]"),
+    )(input)?;
+    Ok((i, Index::Task(t)))
+}
+
 // Unordered  = { "-" | "+" | "*" }
 fn unordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     let (i, u) = alt((tag("*"), tag("-"), tag("+")))(input)?;
@@ -441,9 +468,10 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
         many0(line_ending),
         space0,
         alt((
+            tuple((task, space1)),
             tuple((unordered, space1)),
             tuple((ordered, space1)),
-            tuple((definition, line_ending)),
+            tuple((definition, peek(line_ending))),
         )),
     )))(input)?
     {
@@ -453,20 +481,17 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
     }
 }
 
-fn list_singleline_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>> {
-    if let (input, Some((_, d, (idx, _)))) = opt(tuple((
+fn is_list_singleline_tag<'a>(input: &'a str) -> IResult<&'a str, bool> {
+    if let (input, Some((_, _, _idx, _))) = opt(tuple((
         line_ending,
         space0,
-        alt((
-            tuple((unordered, space1)),
-            tuple((ordered, space1)),
-            tuple((definition, line_ending)),
-        )),
+        alt((task, unordered, ordered, definition_simple)),
+        space1,
     )))(input)?
     {
-        Ok((input, Some((d, idx))))
+        Ok((input, true))
     } else {
-        Ok((input, None))
+        Ok((input, false))
     }
 }
 
@@ -523,14 +548,8 @@ fn list_item<'a>(
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
     let (input, ss) = spans(input, None, true)?;
-    if let (input, Some(lb)) = nested_list_block(input, depth)? {
-        Ok((input, ListItem(index, Block::Paragraph(ss), lb)))
-    } else {
-        Ok((
-            input,
-            ListItem(index, Block::Paragraph(ss), Block::List(vec![])),
-        ))
-    }
+    let (input, slb) = nested_list_block(input, depth)?;
+    Ok((input, ListItem(index, ss, slb)))
 }
 
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
@@ -913,41 +932,25 @@ mod tests {
             Ok((
                 "",
                 vec![Block::List(vec![
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
-                        Block::Paragraph(vec![Span::Text("l1")]),
-                        Block::List(vec![])
-                    ),
-                    ListItem(
-                        Index::Unordered("-"),
-                        Block::Paragraph(vec![Span::Text("l2")]),
-                        Block::List(vec![
+                        vec![Span::Text("l2")],
+                        Some(Block::List(vec![
+                            ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                             ListItem(
                                 Index::Unordered("-"),
-                                Block::Paragraph(vec![Span::Text("l2,1")]),
-                                Block::List(vec![])
-                            ),
-                            ListItem(
-                                Index::Unordered("-"),
-                                Block::Paragraph(vec![Span::Text("l2,2")]),
-                                Block::List(vec![ListItem(
+                                vec![Span::Text("l2,2")],
+                                Some(Block::List(vec![ListItem(
                                     Index::Unordered("-"),
-                                    Block::Paragraph(vec![Span::Text("l2,2,1")]),
-                                    Block::List(vec![])
-                                )])
+                                    vec![Span::Text("l2,2,1")],
+                                    None
+                                )]))
                             ),
-                            ListItem(
-                                Index::Unordered("-"),
-                                Block::Paragraph(vec![Span::Text("l2,3")]),
-                                Block::List(vec![])
-                            )
-                        ])
+                            ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                        ]))
                     ),
-                    ListItem(
-                        Index::Unordered("-"),
-                        Block::Paragraph(vec![Span::Text("l3")]),
-                        Block::List(vec![])
-                    )
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
                 ])]
             ))
         );
@@ -960,41 +963,25 @@ mod tests {
             Ok((
                 "",
                 vec![Block::List(vec![
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
-                        Block::Paragraph(vec![Span::Text("l1")]),
-                        Block::List(vec![])
-                    ),
-                    ListItem(
-                        Index::Unordered("-"),
-                        Block::Paragraph(vec![Span::Text("l2")]),
-                        Block::List(vec![
+                        vec![Span::Text("l2")],
+                        Some(Block::List(vec![
+                            ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                             ListItem(
                                 Index::Unordered("-"),
-                                Block::Paragraph(vec![Span::Text("l2,1")]),
-                                Block::List(vec![])
-                            ),
-                            ListItem(
-                                Index::Unordered("-"),
-                                Block::Paragraph(vec![Span::Text("l2,2")]),
-                                Block::List(vec![ListItem(
+                                vec![Span::Text("l2,2")],
+                                Some(Block::List(vec![ListItem(
                                     Index::Unordered("-"),
-                                    Block::Paragraph(vec![Span::Text("l2,2,1")]),
-                                    Block::List(vec![])
-                                )])
+                                    vec![Span::Text("l2,2,1")],
+                                    None
+                                )]))
                             ),
-                            ListItem(
-                                Index::Unordered("-"),
-                                Block::Paragraph(vec![Span::Text("l2,3")]),
-                                Block::List(vec![])
-                            )
-                        ])
+                            ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                        ]))
                     ),
-                    ListItem(
-                        Index::Unordered("-"),
-                        Block::Paragraph(vec![Span::Text("l3")]),
-                        Block::List(vec![])
-                    )
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
                 ])]
             ))
         );
@@ -1009,17 +996,17 @@ mod tests {
                 vec![Block::List(vec![
                     ListItem(
                         Index::Ordered(Enumerator::Alpha("a")),
-                        Block::Paragraph(vec![Span::Text("l1")]),
-                        Block::List(vec![])
+                        vec![Span::Text("l1")],
+                        None
                     ),
                     ListItem(
                         Index::Ordered(Enumerator::Alpha("B")),
-                        Block::Paragraph(vec![Span::Text("l2")]),
-                        Block::List(vec![ListItem(
+                        vec![Span::Text("l2")],
+                        Some(Block::List(vec![ListItem(
                             Index::Ordered(Enumerator::Digit("1")),
-                            Block::Paragraph(vec![Span::Text("l2,1")]),
-                            Block::List(vec![])
-                        )])
+                            vec![Span::Text("l2,1")],
+                            None
+                        )]))
                     )
                 ])]
             ))
@@ -1033,19 +1020,15 @@ mod tests {
             Ok((
                 "",
                 vec![Block::List(vec![
-                    ListItem(
-                        Index::Definition("ab"),
-                        Block::Paragraph(vec![Span::Text("  alpha")]),
-                        Block::List(vec![])
-                    ),
+                    ListItem(Index::Definition("ab"), vec![Span::Text("\n  alpha")], None),
                     ListItem(
                         Index::Definition("12"),
-                        Block::Paragraph(vec![Span::Text("  digit")]),
-                        Block::List(vec![ListItem(
+                        vec![Span::Text("\n  digit")],
+                        Some(Block::List(vec![ListItem(
                             Index::Definition("iv"),
-                            Block::Paragraph(vec![Span::Text("    roman")]),
-                            Block::List(vec![])
-                        )])
+                            vec![Span::Text("\n    roman")],
+                            None
+                        )]))
                     )
                 ])]
             ))
@@ -1064,18 +1047,29 @@ mod tests {
                         vec![Span::Strong(vec![Span::Text("strong heading")])]
                     ),
                     Block::List(vec![
-                        ListItem(
-                            Index::Unordered("-"),
-                            Block::Paragraph(vec![Span::Text("l1")]),
-                            Block::List(vec![])
-                        ),
-                        ListItem(
-                            Index::Unordered("-"),
-                            Block::Paragraph(vec![Span::Text("l2")]),
-                            Block::List(vec![])
-                        )
+                        ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
+                        ListItem(Index::Unordered("-"), vec![Span::Text("l2")], None)
                     ])
                 ]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_block_task_list() {
+        assert_eq!(
+            document(": ab\n  - [ ] alpha"),
+            Ok((
+                "",
+                vec![Block::List(vec![ListItem(
+                    Index::Definition("ab"),
+                    vec![],
+                    Some(Block::List(vec![ListItem(
+                        Index::Task(" "),
+                        vec![Span::Text("alpha")],
+                        None
+                    )])),
+                ),])]
             ))
         )
     }
