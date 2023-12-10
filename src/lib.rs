@@ -238,8 +238,10 @@ fn spans<'a, 'b>(
                 break;
             }
         }
-        if let Ok((_, Some(Span::EOM))) = cond(inlist, list_eom)(i) {
-            break;
+        if inlist {
+            if let Ok((_, Some(_))) = peek(list_singleline_tag)(i) {
+                break;
+            }
         }
         if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
             if char_total_length > 0 {
@@ -345,7 +347,7 @@ pub enum HLevel {
 fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
     let level = HLEVEL.get(htag).unwrap();
-    let (i, ss) = spans(i, None, false)?;
+    let (i, ss) = spans(i, None, true)?;
     Ok((i, Block::Heading(*level, ss)))
 }
 
@@ -435,11 +437,14 @@ fn unordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
 }
 
 fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>> {
-    if let (input, Some((_, d, idx, _))) = opt(tuple((
+    if let (input, Some((_, d, (idx, _)))) = opt(tuple((
         many0(line_ending),
         space0,
-        alt((unordered, ordered, definition)),
-        alt((space1, line_ending)),
+        alt((
+            tuple((unordered, space1)),
+            tuple((ordered, space1)),
+            tuple((definition, line_ending)),
+        )),
     )))(input)?
     {
         Ok((input, Some((d, idx))))
@@ -448,9 +453,21 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
     }
 }
 
-fn list_eom<'a>(input: &'a str) -> IResult<&'a str, Span<'a>> {
-    let _ = peek(tuple((line_ending, space0, list_tag)))(input)?;
-    Ok((input, Span::EOM))
+fn list_singleline_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>> {
+    if let (input, Some((_, d, (idx, _)))) = opt(tuple((
+        line_ending,
+        space0,
+        alt((
+            tuple((unordered, space1)),
+            tuple((ordered, space1)),
+            tuple((definition, line_ending)),
+        )),
+    )))(input)?
+    {
+        Ok((input, Some((d, idx))))
+    } else {
+        Ok((input, None))
+    }
 }
 
 // ListBlock  = {
@@ -937,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn test_block_unordered_list_single_newline() {
+    fn test_block_unordered_list_singleline() {
         assert_eq!(
             document("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
             Ok((
@@ -1031,6 +1048,34 @@ mod tests {
                         )])
                     )
                 ])]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_block_header_sigleline_unordered_list() {
+        assert_eq!(
+            document("## [*strong heading*]\n- l1\n- l2"),
+            Ok((
+                "",
+                vec![
+                    Block::Heading(
+                        HLevel::H2,
+                        vec![Span::Strong(vec![Span::Text("strong heading")])]
+                    ),
+                    Block::List(vec![
+                        ListItem(
+                            Index::Unordered("-"),
+                            Block::Paragraph(vec![Span::Text("l1")]),
+                            Block::List(vec![])
+                        ),
+                        ListItem(
+                            Index::Unordered("-"),
+                            Block::Paragraph(vec![Span::Text("l2")]),
+                            Block::List(vec![])
+                        )
+                    ])
+                ]
             ))
         )
     }
