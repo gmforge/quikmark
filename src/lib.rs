@@ -379,6 +379,14 @@ fn code<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     Ok((i, Block::Code(format, content)))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Input<'a> {
+    Checked(&'a str),
+    Unchecked(&'a str),
+    Quantity(&'a str),
+    Ratio(&'a str),
+}
+
 // RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 // RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
 #[derive(Debug, PartialEq, Eq)]
@@ -397,7 +405,7 @@ pub enum Index<'a> {
     // - [ ]
     // contents may be a checkbox indicated with space or x,
     // or input field indicated with digit1 or ratio (digit1:digit1)
-    Task(&'a str),
+    Task(Input<'a>),
     // -, +, *
     Unordered(&'a str),
 }
@@ -454,7 +462,18 @@ fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
         alt((tag(" "), tag("x"), ratio, digit1)),
         tag("]"),
     )(input)?;
-    Ok((i, Index::Task(t)))
+    let ti = match t {
+        " " => Input::Unchecked(t),
+        "x" => Input::Checked(t),
+        _ => {
+            if t.contains(":") {
+                Input::Ratio(t)
+            } else {
+                Input::Quantity(t)
+            }
+        }
+    };
+    Ok((i, Index::Task(ti)))
 }
 
 // Unordered  = { "-" | "+" | "*" }
@@ -557,6 +576,7 @@ fn list_item<'a>(
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
 fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     if let (i, Some((d, index))) = list_tag(input)? {
+        // TODO: Do new lists have to start with not beginning spaces?
         if d == "" {
             if let (i, Some(lb)) = list_block(i, d, index)? {
                 return Ok((i, lb));
@@ -1065,7 +1085,7 @@ mod tests {
                     Index::Definition("ab"),
                     vec![],
                     Some(Block::List(vec![ListItem(
-                        Index::Task(" "),
+                        Index::Task(Input::Unchecked(" ")),
                         vec![Span::Text("alpha")],
                         None
                     )])),
