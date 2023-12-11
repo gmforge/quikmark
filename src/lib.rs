@@ -626,7 +626,10 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
     let mut bs = Vec::new();
     let mut i = input;
     loop {
-        (i, _) = multispace0(i)?;
+        // WARN: utilizing multispace here would cause lists that start with spaces
+        // to look like  new lists that start right after a newline, so cannot greedy
+        // consume newlines with spaces.
+        (i, _) = many0(line_ending)(i)?;
         if let Some(name) = div {
             let (input, div_close) = opt(terminated(tag(":::"), peek(alt((line_ending, eof)))))(i)?;
             if div_close != None {
@@ -914,7 +917,7 @@ mod tests {
     #[test]
     fn test_block_div_w_para_in_div_w_heading() {
         assert_eq!(
-            document("::: div1\n\n## [*strong heading*]\n\n  ::: div2\n\n  line"),
+            document("::: div1\n\n## [*strong heading*]\n\n::: div2\n\n  line"),
             Ok((
                 "",
                 vec![Block::Div(
@@ -924,7 +927,7 @@ mod tests {
                             HLevel::H2,
                             vec![Span::Strong(vec![Span::Text("strong heading")])]
                         ),
-                        Block::Div("div2", vec![Block::Paragraph(vec![Span::Text("line")])])
+                        Block::Div("div2", vec![Block::Paragraph(vec![Span::Text("  line")])])
                     ]
                 )]
             ))
