@@ -164,7 +164,7 @@ fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
 fn bracket(input: &str) -> IResult<&str, Span> {
     let (i, t) = preceded(tag("["), is_a("*_=+-^~"))(input)?;
     let closing_tag = t.to_string() + "]";
-    let (i, ss) = spans(i, Some(&closing_tag), false)?;
+    let (i, ss) = spans(i, Some(&closing_tag), None)?;
     match t {
         "*" => Ok((i, Span::Strong(ss))),
         "_" => Ok((i, Span::Emphasis(ss))),
@@ -196,7 +196,7 @@ fn locator(input: &str) -> IResult<&str, &str> {
 // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
 fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, l) = preceded(tag("[["), locator)(input)?;
-    let (i, ss) = spans(i, Some("]]"), false)?;
+    let (i, ss) = spans(i, Some("]]"), None)?;
     Ok((i, Span::Link(l, ss)))
 }
 
@@ -219,7 +219,7 @@ fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
 fn spans<'a, 'b>(
     input: &'a str,
     closer: Option<&'b str>,
-    inlist: bool,
+    inlist: Option<bool>,
 ) -> IResult<&'a str, Vec<Span<'a>>> {
     let mut ss = Vec::new();
     let mut i = input;
@@ -238,8 +238,8 @@ fn spans<'a, 'b>(
                 break;
             }
         }
-        if inlist {
-            if let Ok((_, true)) = is_list_singleline_tag(i) {
+        if let Some(new_list) = inlist {
+            if let Ok((_, true)) = is_list_singleline_tag(new_list, i) {
                 break;
             }
         }
@@ -347,7 +347,7 @@ pub enum HLevel {
 fn heading<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
     let level = HLEVEL.get(htag).unwrap();
-    let (i, ss) = spans(i, None, true)?;
+    let (i, ss) = spans(i, None, Some(false))?;
     Ok((i, Block::Heading(*level, ss)))
 }
 
@@ -500,17 +500,30 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
     }
 }
 
-fn is_list_singleline_tag<'a>(input: &'a str) -> IResult<&'a str, bool> {
-    if let (input, Some((_, _, _idx, _))) = opt(tuple((
-        line_ending,
-        space0,
-        alt((task, unordered, ordered, definition_simple)),
-        space1,
-    )))(input)?
-    {
-        Ok((input, true))
+fn is_list_singleline_tag<'a>(new: bool, input: &'a str) -> IResult<&'a str, bool> {
+    if new {
+        if let (input, Some((_, _, _idx, _))) = opt(tuple((
+            line_ending,
+            space0,
+            alt((task, unordered, ordered, definition_simple)),
+            space1,
+        )))(input)?
+        {
+            Ok((input, true))
+        } else {
+            Ok((input, false))
+        }
     } else {
-        Ok((input, false))
+        if let (input, Some((_, _idx, _))) = opt(tuple((
+            line_ending,
+            alt((task, unordered, ordered, definition_simple)),
+            space1,
+        )))(input)?
+        {
+            Ok((input, true))
+        } else {
+            Ok((input, false))
+        }
     }
 }
 
@@ -566,7 +579,7 @@ fn list_item<'a>(
 ) -> IResult<&'a str, ListItem<'a>> {
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
-    let (input, ss) = spans(input, None, true)?;
+    let (input, ss) = spans(input, None, Some(true))?;
     let (input, slb) = nested_list_block(input, depth)?;
     Ok((input, ListItem(index, ss, slb)))
 }
@@ -612,7 +625,7 @@ pub enum Align {
 
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
 fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    let (i, ss) = spans(input, None, false)?;
+    let (i, ss) = spans(input, None, None)?;
     Ok((i, Block::Paragraph(ss)))
 }
 
@@ -1074,6 +1087,23 @@ mod tests {
                         ListItem(Index::Unordered("-"), vec![Span::Text("l2")], None)
                     ])
                 ]
+            ))
+        )
+    }
+
+    #[test]
+    fn test_block_header_sigleline_span_not_list() {
+        assert_eq!(
+            document("## [*strong heading\n  - l1*]\n  - l2"),
+            Ok((
+                "",
+                vec![Block::Heading(
+                    HLevel::H2,
+                    vec![
+                        Span::Strong(vec![Span::Text("strong heading\n  - l1")]),
+                        Span::Text("\n  - l2")
+                    ]
+                )]
             ))
         )
     }
