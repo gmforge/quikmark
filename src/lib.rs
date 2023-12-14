@@ -1,10 +1,10 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, anychar, char, digit1, line_ending, multispace0, not_line_ending, space0, space1,
+    alpha1, anychar, char, digit1, line_ending, not_line_ending, space0, space1,
 };
 use nom::character::{is_digit, is_newline, is_space};
-use nom::combinator::{consumed, eof, not, opt, peek};
+use nom::combinator::{cond, consumed, eof, not, opt, peek};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -379,14 +379,6 @@ fn code<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     Ok((i, Block::Code(format, content)))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Input<'a> {
-    Checked(&'a str),
-    Unchecked(&'a str),
-    Quantity(&'a str),
-    Ratio(&'a str),
-}
-
 // RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 // RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
 #[derive(Debug, PartialEq, Eq)]
@@ -405,7 +397,7 @@ pub enum Index<'a> {
     // - [ ]
     // contents may be a checkbox indicated with space or x,
     // or input field indicated with digit1 or ratio (digit1:digit1)
-    Task(Input<'a>),
+    Task(&'a str),
     // -, +, *
     Unordered(&'a str),
 }
@@ -462,18 +454,7 @@ fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
         alt((tag(" "), tag("x"), ratio, digit1)),
         tag("]"),
     )(input)?;
-    let ti = match t {
-        " " => Input::Unchecked(t),
-        "x" => Input::Checked(t),
-        _ => {
-            if t.contains(":") {
-                Input::Ratio(t)
-            } else {
-                Input::Quantity(t)
-            }
-        }
-    };
-    Ok((i, Index::Task(ti)))
+    Ok((i, Index::Task(t)))
 }
 
 // Unordered  = { "-" | "+" | "*" }
@@ -501,29 +482,16 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
 }
 
 fn is_list_singleline_tag<'a>(new: bool, input: &'a str) -> IResult<&'a str, bool> {
-    if new {
-        if let (input, Some((_, _, _idx, _))) = opt(tuple((
-            line_ending,
-            space0,
-            alt((task, unordered, ordered, definition_simple)),
-            space1,
-        )))(input)?
-        {
-            Ok((input, true))
-        } else {
-            Ok((input, false))
-        }
+    if let (input, Some((_, _, _idx, _))) = opt(tuple((
+        line_ending,
+        cond(new, space0),
+        alt((task, unordered, ordered, definition_simple)),
+        space1,
+    )))(input)?
+    {
+        Ok((input, true))
     } else {
-        if let (input, Some((_, _idx, _))) = opt(tuple((
-            line_ending,
-            alt((task, unordered, ordered, definition_simple)),
-            space1,
-        )))(input)?
-        {
-            Ok((input, true))
-        } else {
-            Ok((input, false))
-        }
+        Ok((input, false))
     }
 }
 
@@ -589,7 +557,6 @@ fn list_item<'a>(
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
 fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     if let (i, Some((d, index))) = list_tag(input)? {
-        // TODO: Do new lists have to start with not beginning spaces?
         if d == "" {
             if let (i, Some(lb)) = list_block(i, d, index)? {
                 return Ok((i, lb));
@@ -1118,7 +1085,7 @@ mod tests {
                     Index::Definition("ab"),
                     vec![],
                     Some(Block::List(vec![ListItem(
-                        Index::Task(Input::Unchecked(" ")),
+                        Index::Task(" "),
                         vec![Span::Text("alpha")],
                         None
                     )])),
