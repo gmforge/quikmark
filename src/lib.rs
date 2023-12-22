@@ -1250,13 +1250,14 @@ mod tests {
 
     #[test]
     fn test_content_of_block_paragraph_link_with_location_and_span() {
-        let doc = document("left [[loc|text `v` [*a[_b_]*]]] right");
+        let doc = document("left \\\n[[loc|text `v` [*a[_b_]*]]] right");
         assert_eq!(
             doc,
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
+                    Span::LineBreak("\n"),
                     Span::Link(
                         "loc",
                         vec![
@@ -1278,7 +1279,7 @@ mod tests {
                 let ts = contents(ss.to_vec());
                 assert_eq!(
                     ts,
-                    vec!["left ", "loc", "text ", "v", " ", "a", "b", " right"]
+                    vec!["left ", "\n", "loc", "text ", "v", " ", "a", "b", " right"]
                 );
             } else {
                 panic!("Not able to get span from paragragh within vector {:?}", v);
