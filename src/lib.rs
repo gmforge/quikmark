@@ -184,6 +184,39 @@ fn bracket(input: &str) -> IResult<&str, Span> {
 //     strong
 //   | emphasis
 // }
+fn at_boundary_end<'a>(closer: &'a str, input: &'a str) -> IResult<&'a str, &'a str> {
+    terminated(
+        tag(closer),
+        alt((
+            tag(" "),
+            tag("\t"),
+            tag("\n"),
+            tag("\r"),
+            tag("*"),
+            tag("_"),
+            tag("=]"),
+            tag("+]"),
+            tag("-]"),
+            tag("^"),
+            tag("~"),
+            tag("]]"),
+            tag("{"),
+        )),
+    )(input)
+}
+fn edge(input: &str) -> IResult<&str, Span> {
+    let (i, t) = alt((tag("*"), tag("_")))(input)?;
+    let _ = not(alt((tag(" "), tag("\n"), tag("\t"), tag("\r"))))(i)?;
+    let (i, ss) = spans(i, Some(&t), None)?;
+    match t {
+        "*" => Ok((i, Span::Strong(ss))),
+        "_" => Ok((i, Span::Emphasis(ss))),
+        _ => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Alt,
+        ))),
+    }
+}
 
 // LinkDlmr  = _{ "|" | &("]" | NEWLINE | EOI) }
 // Locator   =  { (("\\" | !LinkDlmr) ~ ANY)+ }
@@ -225,33 +258,56 @@ fn spans<'a, 'b>(
     let mut i = input;
     // Loop through text until reach two newlines
     // or in future matching valid list item.
-    // Automatically collect breaks and escaped char
-    // Also turn escaped spaces into non-breaking spaces
+    let mut boundary = true;
     let mut text_start = input;
     let mut char_total_length: usize = 0;
     let mut trim_closer = false;
     while i != "" {
-        // println!("input: {:?}, text_start: {:?}", i, text_start);
+        // println!(
+        //     "input: {:?}\n  boundary: {:?}\n  closer: {:?}\n  text_start: {:?}",
+        //     i, boundary, closer, text_start
+        // );
+        // if we just started or next char is boundary
         if let Some(closer) = closer {
             if i.starts_with(closer) {
-                trim_closer = true;
-                break;
+                if boundary == false && (closer == "*" || closer == "_") {
+                    if let Ok(_) = at_boundary_end(closer, i) {
+                        trim_closer = true;
+                        break;
+                    }
+                } else {
+                    trim_closer = true;
+                    break;
+                }
             }
         }
+        // Escape loop if notice any list starting tags
         if let Some(new_list) = inlist {
             if let Ok((_, true)) = is_list_singleline_tag(new_list, i) {
                 break;
             }
         }
-        if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
+        // Automatically collect breaks and escaped char
+        // and turn escaped spaces into non-breaking spaces
+        // before checking for qwikmark tags
+        if let (true, Ok((input, s))) = (boundary, edge(i)) {
+            boundary = false;
             if char_total_length > 0 {
                 let (text, _) = text_start.split_at(char_total_length);
                 ss.push(Span::Text(text));
-                text_start = input;
                 char_total_length = 0;
-            } else if closer == None {
-                text_start = input;
             }
+            text_start = input;
+            i = input;
+            ss.push(s);
+        } else if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
+            boundary = false;
+            if char_total_length > 0 {
+                let (text, _) = text_start.split_at(char_total_length);
+                ss.push(Span::Text(text));
+                char_total_length = 0;
+            }
+            text_start = input;
             i = input;
             // End of Mark (EOM) Indicates a common ending point
             // such as an end to a block such as a paragraph or
@@ -259,10 +315,15 @@ fn spans<'a, 'b>(
             if s == Span::EOM {
                 break;
             }
-
             ss.push(s);
         } else {
-            let char_length = i.chars().next().unwrap().len_utf8();
+            let c = i.chars().next().unwrap();
+            boundary = if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+                true
+            } else {
+                false
+            };
+            let char_length = c.len_utf8();
             (_, i) = i.split_at(char_length);
             char_total_length += char_length;
         }
@@ -701,6 +762,70 @@ mod tests {
                     Span::Text("left"),
                     Span::NBWS('\t'),
                     Span::Text("right")
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_text_edge_text() {
+        assert_eq!(
+            document("left *strong* right"),
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Strong(vec![Span::Text("strong")]),
+                    Span::Text(" right")
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_text_edge_textedge_text() {
+        assert_eq!(
+            document("l _*s* e_ r"),
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("l "),
+                    Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")]), Span::Text(" e")]),
+                    Span::Text(" r")
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_text_edgetext_textedge_text() {
+        assert_eq!(
+            document("l _e1 *s* e2_ r"),
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("l "),
+                    Span::Emphasis(vec![
+                        Span::Text("e1 "),
+                        Span::Strong(vec![Span::Text("s")]),
+                        Span::Text(" e2")
+                    ]),
+                    Span::Text(" r")
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_text_edge_edge_text() {
+        assert_eq!(
+            document("l _*s*_ r"),
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("l "),
+                    Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")])]),
+                    Span::Text(" r")
                 ])]
             ))
         );
@@ -1151,17 +1276,8 @@ mod tests {
                 let ts = contents(ss.to_vec());
                 assert_eq!(
                     ts,
-                    vec!["left ",
-                        "loc",
-                        "text ",
-                        "v",
-                        " ",
-                        "a",
-                        "b",
-                        " right"
-                    ]
+                    vec!["left ", "loc", "text ", "v", " ", "a", "b", " right"]
                 );
-                // println!("{:?}", text);
             } else {
                 panic!("Not able to get span from paragragh within vector {:?}", v);
             }
