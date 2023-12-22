@@ -50,7 +50,7 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
 // Highlight   =  { "=" }
 // Insert      =  { "+" }
 // Delete      =  { "-" }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Span<'a> {
     LineBreak(char),
     NBWS(char),
@@ -278,6 +278,33 @@ fn spans<'a, 'b>(
         }
     }
     Ok((text_start, ss))
+}
+
+pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
+    outer
+        .into_iter()
+        .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
+            let rs = match result {
+                Span::Text(t) | Span::Verbatim(_, _, t) | Span::Hash(t) => vec![t],
+                Span::Link(s, vs) => {
+                    let mut ss = vec![s];
+                    ss.extend(contents(vs));
+                    ss
+                }
+                Span::Strong(vs)
+                | Span::Emphasis(vs)
+                | Span::Superscript(vs)
+                | Span::Subscript(vs)
+                | Span::Highlight(vs)
+                | Span::Insert(vs)
+                | Span::Delete(vs) => contents(vs),
+                Span::LineBreak(_) => vec!["\n"],
+                Span::NBWS(_) => vec![" "],
+                Span::Esc(_) | Span::EOM => vec![],
+            };
+            unrolled.extend(rs);
+            unrolled
+        })
 }
 
 // LineHash = { Edge ~ Hash ~ Location }
@@ -1092,5 +1119,54 @@ mod tests {
                 ),])]
             ))
         )
+    }
+
+    #[test]
+    fn test_content_of_block_paragraph_link_with_location_and_span() {
+        let doc = document("left [[loc|text `v` [*a[_b_]*]]] right");
+        assert_eq!(
+            doc,
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Link(
+                        "loc",
+                        vec![
+                            Span::Text("text "),
+                            Span::Verbatim("`", "`", "v"),
+                            Span::Text(" "),
+                            Span::Strong(vec![
+                                Span::Text("a"),
+                                Span::Emphasis(vec![Span::Text("b"),])
+                            ])
+                        ]
+                    ),
+                    Span::Text(" right")
+                ])]
+            ))
+        );
+        if let Ok(("", v)) = doc {
+            if let Block::Paragraph(ss) = &v[0] {
+                let ts = contents(ss.to_vec());
+                assert_eq!(
+                    ts,
+                    vec!["left ",
+                        "loc",
+                        "text ",
+                        "v",
+                        " ",
+                        "a",
+                        "b",
+                        " right"
+                    ]
+                );
+                // println!("{:?}", text);
+            } else {
+                panic!("Not able to get span from paragragh within vector {:?}", v);
+            }
+        } else {
+            panic!("Not able to get vector of blocks from document {:?}", doc);
+        }
     }
 }
