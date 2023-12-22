@@ -110,6 +110,19 @@ fn escaped<'a>(input: &'a str) -> IResult<&'a str, Span> {
 //   | Hash
 //   | Verbatim
 // }
+// NOTE: Hash and Verbatim where handles separately.
+fn nobracket<'a>(input: &'a str) -> IResult<&'a str, Span> {
+    let (i, t) = alt((tag("^"), tag("~")))(input)?;
+    let (i, ss) = spans(i, Some(&t), None)?;
+    match t {
+        "^" => Ok((i, Span::Superscript(ss))),
+        "~" => Ok((i, Span::Subscript(ss))),
+        _ => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Alt,
+        ))),
+    }
+}
 
 // RawText   =  { (!(PEEK | NEWLINE) ~ ANY)+ }
 // Raw       =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
@@ -303,7 +316,9 @@ fn spans<'a, 'b>(
             text_start = input;
             i = input;
             ss.push(s);
-        } else if let Ok((input, s)) = alt((eom, escaped, verbatim, hash, link, bracket))(i) {
+        } else if let Ok((input, s)) =
+            alt((eom, escaped, verbatim, hash, link, bracket, nobracket))(i)
+        {
             boundary = false;
             if char_total_length > 0 {
                 let (text, _) = text_start.split_at(char_total_length);
@@ -953,14 +968,20 @@ mod tests {
     }
 
     #[test]
-    fn test_block_paragraph_link_with_location_and_text() {
+    fn test_block_paragraph_link_with_location_and_text_super() {
         assert_eq!(
-            document("left [[loc|text]] right"),
+            document("left [[loc|text^sup^]] right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Link("loc", vec![Span::Text("text")]),
+                    Span::Link(
+                        "loc",
+                        vec![
+                            Span::Text("text"),
+                            Span::Superscript(vec![Span::Text("sup")])
+                        ]
+                    ),
                     Span::Text(" right")
                 ])]
             ))
