@@ -1,9 +1,9 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, anychar, char, digit1, line_ending, not_line_ending, space0, space1,
+    alpha1, char, digit1, line_ending, not_line_ending, space0, space1,
 };
-use nom::character::{is_digit, is_newline, is_space};
+use nom::character::is_digit;
 use nom::combinator::{cond, consumed, eof, not, opt, peek};
 use nom::multi::many0;
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
@@ -52,9 +52,9 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
 // Delete      =  { "-" }
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Span<'a> {
-    LineBreak(char),
-    NBWS(char),
-    Esc(char),
+    LineBreak(&'a str),
+    NBWS(&'a str),
+    Esc(&'a str),
     Text(&'a str),
     Link(&'a str, Vec<Span<'a>>),
     Hash(&'a str),
@@ -91,13 +91,16 @@ fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
 
 // LineBreak =  { "\\" ~ &NEWLINE }
 fn escaped<'a>(input: &'a str) -> IResult<&'a str, Span> {
-    let (i, b) = preceded(tag("\\"), anychar)(input)?;
-    if is_space(b as u8) {
-        Ok((i, Span::NBWS(b)))
-    } else if is_newline(b as u8) {
-        Ok((i, Span::LineBreak(b)))
+    let (i, e) = preceded(
+        tag("\\"),
+        alt((tag(" "), line_ending, take_while_m_n(1, 1, |c| c != ' '))),
+    )(input)?;
+    if e == " " {
+        Ok((i, Span::NBWS(e)))
+    } else if let Ok(_) = line_ending::<_, ()>(e) {
+        Ok((i, Span::LineBreak(e)))
     } else {
-        Ok((i, Span::Esc(b)))
+        Ok((i, Span::Esc(e)))
     }
 }
 
@@ -359,9 +362,8 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
                 | Span::Highlight(vs)
                 | Span::Insert(vs)
                 | Span::Delete(vs) => contents(vs),
-                Span::LineBreak(_) => vec!["\n"],
-                Span::NBWS(_) => vec![" "],
-                Span::Esc(_) | Span::EOM => vec![],
+                Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![s],
+                Span::EOM => vec![],
             };
             unrolled.extend(rs);
             unrolled
@@ -746,7 +748,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("line"),
-                    Span::LineBreak('\n')
+                    Span::LineBreak("\n")
                 ])]
             ))
         );
@@ -755,12 +757,12 @@ mod tests {
     #[test]
     fn test_block_paragraph_nbsp() {
         assert_eq!(
-            document("left\\\tright"),
+            document("left\\ right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left"),
-                    Span::NBWS('\t'),
+                    Span::NBWS(" "),
                     Span::Text("right")
                 ])]
             ))
