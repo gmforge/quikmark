@@ -44,7 +44,10 @@ fn value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
 fn attributes<'a>(input: &'a str) -> IResult<&'a str, HashMap<&'a str, &'a str>> {
     let (input, kvs) = delimited(
         tuple((tag("{"), space0)),
-        separated_list1(space1, separated_pair(key, tag("="), value)),
+        separated_list1(
+            tuple((opt(line_ending), space1)),
+            separated_pair(key, tag("="), value),
+        ),
         tuple((space0, tag("}"))),
     )(input)?;
     let mut h = HashMap::new();
@@ -1071,15 +1074,24 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_attributes() {
         let doc = document("left [[loc]]{k1=v1 k_2=v_2}");
-        //if let Ok(("", v)) = doc {
-        //    if let Block::Paragraph(ss) = &v[0] {
-        //        let ts = contents(ss.to_vec());
-        //    } else {
-        //        panic!("Not able to get span from paragragh within vector {:?}", v);
-        //    }
-        //} else {
-        //    panic!("Not able to get vector of blocks from document {:?}", doc);
-        //}
+        assert_eq!(
+            doc,
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Attribute(
+                        Box::new(Span::Link("loc", vec![])),
+                        HashMap::from([("k1", "v1",), ("k_2", "v_2")])
+                    )
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_link_multiline_attributes() {
+        let doc = document("left [[loc]]{k1=v1\n               k_2=v_2}");
         assert_eq!(
             doc,
             Ok((
