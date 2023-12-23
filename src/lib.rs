@@ -5,10 +5,11 @@ use nom::character::complete::{
 };
 use nom::character::is_digit;
 use nom::combinator::{cond, consumed, eof, not, opt, peek};
-use nom::multi::many0;
+use nom::multi::{many0, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
+use std::collections::HashMap;
 
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
@@ -26,6 +27,33 @@ use phf::phf_map;
 //
 // Block::Paragraph is the default Block that captures text in te form of Spans
 // Span::Text is the default span/tag that joins char runs
+
+// ATTRIBUTES
+
+// Format     = { "=" ~ Field }
+// Identifier = { "#" ~ Field }
+// Class      = { "." ~ Field }
+// Attribute  = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
+fn key<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+    // let (input, (k, _)) = consumed(tuple((alpha1, many0(alt((alphanumeric0, is_a("_")))))))(input)?;
+    is_not("= }\t\n\r")(input)
+}
+fn value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+    is_not(" }\t\n\r")(input)
+}
+fn attributes<'a>(input: &'a str) -> IResult<&'a str, HashMap<&'a str, &'a str>> {
+    let (input, kvs) = delimited(
+        tuple((tag("{"), space0)),
+        separated_list1(space1, separated_pair(key, tag("="), value)),
+        tuple((space0, tag("}"))),
+    )(input)?;
+    let mut h = HashMap::new();
+    for (k, v) in kvs {
+        // For security reasons only add first value of a key found.
+        h.entry(k).or_insert(v);
+    }
+    Ok((input, h))
+}
 
 // SPANS
 
@@ -67,15 +95,8 @@ pub enum Span<'a> {
     Insert(Vec<Span<'a>>),
     Delete(Vec<Span<'a>>),
     EOM,
+    Attribute(Box<Span<'a>>, HashMap<&'a str, &'a str>),
 }
-
-// NOTE: Simplfy by allowing all tags to be Bound with square brackets ([])
-// Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
-
-// Format     = { "=" ~ Field }
-// Identifier = { "#" ~ Field }
-// Class      = { "." ~ Field }
-// Attribute  = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
 
 // End       =  { NEWLINE ~ NEWLINE | EOI }
 fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
@@ -196,6 +217,7 @@ fn bracket(input: &str) -> IResult<&str, Span> {
     }
 }
 
+// Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
 // edgetag     = _{
 //     strong
 //   | emphasis
@@ -330,10 +352,19 @@ fn spans<'a, 'b>(
             // End of Mark (EOM) Indicates a common ending point
             // such as an end to a block such as a paragraph or
             // that the file input as ended.
-            if s == Span::EOM {
-                break;
+            match s {
+                Span::EOM => break,
+                Span::Hash(_) | Span::Esc(_) => ss.push(s),
+                _ => {
+                    if let Ok((input, kvs)) = attributes(i) {
+                        ss.push(Span::Attribute(Box::new(s), kvs));
+                        text_start = input;
+                        i = input;
+                    } else {
+                        ss.push(s);
+                    }
+                }
             }
-            ss.push(s);
         } else {
             let c = i.chars().next().unwrap();
             boundary = if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
@@ -359,6 +390,7 @@ fn spans<'a, 'b>(
     Ok((text_start, ss))
 }
 
+// Contents concatenates the text within the nested vectors of spans
 pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
     outer
         .into_iter()
@@ -378,6 +410,7 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
                 | Span::Insert(vs)
                 | Span::Delete(vs) => contents(vs),
                 Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![s],
+                Span::Attribute(s, _) => contents(vec![*s]),
                 Span::EOM => vec![],
             };
             unrolled.extend(rs);
@@ -712,7 +745,7 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
     let mut i = input;
     loop {
         // WARN: utilizing multispace here would cause lists that start with spaces
-        // to look like  new lists that start right after a newline, so cannot greedy
+        // to look like new lists that start right after a newline, so cannot greedy
         // consume newlines with spaces.
         (i, _) = many0(line_ending)(i)?;
         if let Some(name) = div {
@@ -1030,6 +1063,33 @@ mod tests {
                     Span::Text(" strong-right")
                   ]),
                   Span::Text(" text-right")
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_link_attributes() {
+        let doc = document("left [[loc]]{k1=v1 k_2=v_2}");
+        //if let Ok(("", v)) = doc {
+        //    if let Block::Paragraph(ss) = &v[0] {
+        //        let ts = contents(ss.to_vec());
+        //    } else {
+        //        panic!("Not able to get span from paragragh within vector {:?}", v);
+        //    }
+        //} else {
+        //    panic!("Not able to get vector of blocks from document {:?}", doc);
+        //}
+        assert_eq!(
+            doc,
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Attribute(
+                        Box::new(Span::Link("loc", vec![])),
+                        HashMap::from([("k1", "v1",), ("k_2", "v_2")])
+                    )
                 ])]
             ))
         );
