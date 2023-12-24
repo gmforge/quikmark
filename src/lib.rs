@@ -1,7 +1,7 @@
 use nom::branch::alt;
-use nom::bytes::complete::{escaped, is_a, is_not, tag, take_while1, take_while_m_n};
+use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, anychar, char, digit1, line_ending, not_line_ending, one_of, space0, space1,
+    alpha1, anychar, char, digit1, line_ending, not_line_ending, space0, space1,
 };
 use nom::character::is_digit;
 use nom::combinator::{cond, consumed, eof, not, opt, peek};
@@ -93,18 +93,39 @@ pub enum Span<'a> {
     NBWS(&'a str),
     Esc(&'a str),
     Text(&'a str),
-    Link(&'a str, Vec<Span<'a>>),
     Hash(&'a str),
-    Verbatim(&'a str, &'a str, &'a str),
-    Strong(Vec<Span<'a>>),
-    Emphasis(Vec<Span<'a>>),
-    Superscript(Vec<Span<'a>>),
-    Subscript(Vec<Span<'a>>),
-    Highlight(Vec<Span<'a>>),
-    Insert(Vec<Span<'a>>),
-    Delete(Vec<Span<'a>>),
     EOM,
-    Attribute(Box<Span<'a>>, HashMap<&'a str, &'a str>),
+    // Tags with Attributes
+    Link(&'a str, Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Verbatim(&'a str, &'a str, &'a str, Option<HashMap<&'a str, &'a str>>),
+    Strong(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Emphasis(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Superscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Subscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Highlight(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Insert(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Delete(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+}
+
+fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> Span<'a> {
+    match span {
+        // Tags with Attributes
+        Span::Link(loc, ss, _) => Span::Link(loc, ss, Some(kvs)),
+        Span::Verbatim(start, stop, text, _) => Span::Verbatim(start, stop, text, Some(kvs)),
+        Span::Strong(ss, _) => Span::Strong(ss, Some(kvs)),
+        Span::Emphasis(ss, _) => Span::Emphasis(ss, Some(kvs)),
+        Span::Superscript(ss, _) => Span::Superscript(ss, Some(kvs)),
+        Span::Subscript(ss, _) => Span::Subscript(ss, Some(kvs)),
+        Span::Highlight(ss, _) => Span::Highlight(ss, Some(kvs)),
+        Span::Insert(ss, _) => Span::Insert(ss, Some(kvs)),
+        Span::Delete(ss, _) => Span::Delete(ss, Some(kvs)),
+        Span::LineBreak(_)
+        | Span::NBWS(_)
+        | Span::Esc(_)
+        | Span::Text(_)
+        | Span::Hash(_)
+        | Span::EOM => span,
+    }
 }
 
 // End       =  { NEWLINE ~ NEWLINE | EOI }
@@ -145,8 +166,8 @@ fn nobracket<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, t) = alt((tag("^"), tag("~")))(input)?;
     let (i, ss) = spans(i, Some(&t), None)?;
     match t {
-        "^" => Ok((i, Span::Superscript(ss))),
-        "~" => Ok((i, Span::Subscript(ss))),
+        "^" => Ok((i, Span::Superscript(ss, None))),
+        "~" => Ok((i, Span::Subscript(ss, None))),
         _ => Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
@@ -163,7 +184,7 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
     while i.len() > 0 {
         if let Ok((i, evtag)) = tag::<_, &str, ()>("\n")(i) {
             let (content, _) = input.split_at(char_total_length);
-            return Ok((i, Span::Verbatim(svtag, evtag, content)));
+            return Ok((i, Span::Verbatim(svtag, evtag, content, None)));
         } else if let Ok((ti, evtag)) = take_while1::<_, &str, ()>(|b| b == '`')(i) {
             if svtag == evtag {
                 let (content, _) = input.split_at(char_total_length);
@@ -171,9 +192,9 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
                 //  `` `verbatim` `` -> <code>`verbatim`</code>
                 let content_trimmed = content.trim();
                 if content_trimmed.starts_with('`') && content_trimmed.ends_with('`') {
-                    return Ok((ti, Span::Verbatim(svtag, evtag, content_trimmed)));
+                    return Ok((ti, Span::Verbatim(svtag, evtag, content_trimmed, None)));
                 }
-                return Ok((ti, Span::Verbatim(svtag, evtag, content)));
+                return Ok((ti, Span::Verbatim(svtag, evtag, content, None)));
             }
             i = ti;
             char_total_length += evtag.len();
@@ -184,7 +205,7 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
         }
     }
     let (content, _) = input.split_at(char_total_length);
-    Ok((i, Span::Verbatim(svtag, i, content)))
+    Ok((i, Span::Verbatim(svtag, i, content, None)))
 }
 
 //{=format #identifier .class key=value key="value" %comment%}
@@ -212,13 +233,13 @@ fn bracket(input: &str) -> IResult<&str, Span> {
     let closing_tag = t.to_string() + "]";
     let (i, ss) = spans(i, Some(&closing_tag), None)?;
     match t {
-        "*" => Ok((i, Span::Strong(ss))),
-        "_" => Ok((i, Span::Emphasis(ss))),
-        "=" => Ok((i, Span::Highlight(ss))),
-        "+" => Ok((i, Span::Insert(ss))),
-        "-" => Ok((i, Span::Delete(ss))),
-        "^" => Ok((i, Span::Superscript(ss))),
-        "~" => Ok((i, Span::Subscript(ss))),
+        "*" => Ok((i, Span::Strong(ss, None))),
+        "_" => Ok((i, Span::Emphasis(ss, None))),
+        "=" => Ok((i, Span::Highlight(ss, None))),
+        "+" => Ok((i, Span::Insert(ss, None))),
+        "-" => Ok((i, Span::Delete(ss, None))),
+        "^" => Ok((i, Span::Superscript(ss, None))),
+        "~" => Ok((i, Span::Subscript(ss, None))),
         _ => Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
@@ -256,8 +277,8 @@ fn edge(input: &str) -> IResult<&str, Span> {
     let _ = not(alt((tag(" "), tag("\n"), tag("\t"), tag("\r"))))(i)?;
     let (i, ss) = spans(i, Some(&t), None)?;
     match t {
-        "*" => Ok((i, Span::Strong(ss))),
-        "_" => Ok((i, Span::Emphasis(ss))),
+        "*" => Ok((i, Span::Strong(ss, None))),
+        "_" => Ok((i, Span::Emphasis(ss, None))),
         _ => Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
@@ -277,7 +298,7 @@ fn locator(input: &str) -> IResult<&str, &str> {
 fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, l) = preceded(tag("[["), locator)(input)?;
     let (i, ss) = spans(i, Some("]]"), None)?;
-    Ok((i, Span::Link(l, ss)))
+    Ok((i, Span::Link(l, ss, None)))
 }
 
 // Char      =  { !NEWLINE ~ "\\"? ~ ANY }
@@ -365,7 +386,8 @@ fn spans<'a, 'b>(
                 Span::Hash(_) | Span::Esc(_) => ss.push(s),
                 _ => {
                     if let Ok((input, kvs)) = attributes(i) {
-                        ss.push(Span::Attribute(Box::new(s), kvs));
+                        let s = span_with_attributes(s, kvs);
+                        ss.push(s);
                         text_start = input;
                         i = input;
                     } else {
@@ -404,21 +426,20 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
         .into_iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Verbatim(_, _, t) | Span::Hash(t) => vec![t],
-                Span::Link(s, vs) => {
+                Span::Text(t) | Span::Verbatim(_, _, t, _) | Span::Hash(t) => vec![t],
+                Span::Link(s, vs, _) => {
                     let mut ss = vec![s];
                     ss.extend(contents(vs));
                     ss
                 }
-                Span::Strong(vs)
-                | Span::Emphasis(vs)
-                | Span::Superscript(vs)
-                | Span::Subscript(vs)
-                | Span::Highlight(vs)
-                | Span::Insert(vs)
-                | Span::Delete(vs) => contents(vs),
+                Span::Strong(vs, _)
+                | Span::Emphasis(vs, _)
+                | Span::Superscript(vs, _)
+                | Span::Subscript(vs, _)
+                | Span::Highlight(vs, _)
+                | Span::Insert(vs, _)
+                | Span::Delete(vs, _) => contents(vs),
                 Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![s],
-                Span::Attribute(s, _) => contents(vec![*s]),
                 Span::EOM => vec![],
             };
             unrolled.extend(rs);
@@ -833,7 +854,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Strong(vec![Span::Text("strong")]),
+                    Span::Strong(vec![Span::Text("strong")], None),
                     Span::Text(" right")
                 ])]
             ))
@@ -848,7 +869,10 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("l "),
-                    Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")]), Span::Text(" e")]),
+                    Span::Emphasis(
+                        vec![Span::Strong(vec![Span::Text("s")], None), Span::Text(" e")],
+                        None
+                    ),
                     Span::Text(" r")
                 ])]
             ))
@@ -863,11 +887,14 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("l "),
-                    Span::Emphasis(vec![
-                        Span::Text("e1 "),
-                        Span::Strong(vec![Span::Text("s")]),
-                        Span::Text(" e2")
-                    ]),
+                    Span::Emphasis(
+                        vec![
+                            Span::Text("e1 "),
+                            Span::Strong(vec![Span::Text("s")], None),
+                            Span::Text(" e2")
+                        ],
+                        None
+                    ),
                     Span::Text(" r")
                 ])]
             ))
@@ -882,7 +909,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("l "),
-                    Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")])]),
+                    Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")], None)], None),
                     Span::Text(" r")
                 ])]
             ))
@@ -897,7 +924,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "``", "verbatim"),
+                    Span::Verbatim("``", "``", "verbatim", None),
                     Span::Text(" right")
                 ])]
             ))
@@ -912,7 +939,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "\n", "verbatim"),
+                    Span::Verbatim("``", "\n", "verbatim", None),
                     Span::Text(" right")
                 ])]
             ))
@@ -927,7 +954,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "``", "ver```batim"),
+                    Span::Verbatim("``", "``", "ver```batim", None),
                     Span::Text(" right")
                 ])]
             ))
@@ -942,7 +969,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "``", "`verbatim`"),
+                    Span::Verbatim("``", "``", "`verbatim`", None),
                     Span::Text(" right")
                 ])]
             ))
@@ -1002,7 +1029,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Link("loc", vec![])
+                    Span::Link("loc", vec![], None)
                 ])]
             ))
         );
@@ -1020,8 +1047,9 @@ mod tests {
                         "loc",
                         vec![
                             Span::Text("text"),
-                            Span::Superscript(vec![Span::Text("sup")])
-                        ]
+                            Span::Superscript(vec![Span::Text("sup")], None)
+                        ],
+                        None
                     ),
                     Span::Text(" right")
                 ])]
@@ -1039,7 +1067,11 @@ mod tests {
                     Span::Text("left "),
                     Span::Link(
                         "loc",
-                        vec![Span::Text("text "), Span::Verbatim("`", "`", "verbatim")]
+                        vec![
+                            Span::Text("text "),
+                            Span::Verbatim("`", "`", "verbatim", None)
+                        ],
+                        None
                     ),
                     Span::Text(" right")
                 ])]
@@ -1059,17 +1091,17 @@ mod tests {
                     Span::Text("strong-left "),
                     Span::Emphasis(vec![
                       Span::Text("emphasis-center")
-                    ]),
+                    ], None),
                     Span::Text("\t"),
                     Span::Insert(vec![
                       Span::Text("insert-left "),
                       Span::Superscript(vec![
                         Span::Text("superscript-center")
-                      ]),
+                      ], None),
                       Span::Text(" insert-right")
-                    ]),
+                    ], None),
                     Span::Text(" strong-right")
-                  ]),
+                  ], None),
                   Span::Text(" text-right")
                 ])]
             ))
@@ -1085,9 +1117,10 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Attribute(
-                        Box::new(Span::Link("loc", vec![])),
-                        HashMap::from([("k1", "v1",), ("k_2", "v_2")])
+                    Span::Link(
+                        "loc",
+                        vec![],
+                        Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     )
                 ])]
             ))
@@ -1103,9 +1136,10 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Attribute(
-                        Box::new(Span::Link("loc", vec![])),
-                        HashMap::from([("k1", "v1",), ("k_2", "v_2")])
+                    Span::Link(
+                        "loc",
+                        vec![],
+                        Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     )
                 ])]
             ))
@@ -1121,9 +1155,10 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Attribute(
-                        Box::new(Span::Link("loc", vec![])),
-                        HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])
+                    Span::Link(
+                        "loc",
+                        vec![],
+                        Some(HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)]))
                     )
                 ])]
             ))
@@ -1138,7 +1173,7 @@ mod tests {
                 "",
                 vec![Block::Heading(
                     HLevel::H2,
-                    vec![Span::Strong(vec![Span::Text("strong heading")])]
+                    vec![Span::Strong(vec![Span::Text("strong heading")], None)]
                 )]
             ))
         );
@@ -1155,7 +1190,7 @@ mod tests {
                         HLevel::H2,
                         vec![
                             Span::Text("header\nnext line "),
-                            Span::Strong(vec![Span::Text("strong")])
+                            Span::Strong(vec![Span::Text("strong")], None)
                         ]
                     ),
                     Block::Paragraph(vec![Span::Text("new paragraph")])
@@ -1175,7 +1210,7 @@ mod tests {
                     vec![
                         Block::Heading(
                             HLevel::H2,
-                            vec![Span::Strong(vec![Span::Text("strong heading")])]
+                            vec![Span::Strong(vec![Span::Text("strong heading")], None)]
                         ),
                         Block::Div("div2", vec![Block::Paragraph(vec![Span::Text("  line")])])
                     ]
@@ -1317,7 +1352,7 @@ mod tests {
                 vec![
                     Block::Heading(
                         HLevel::H2,
-                        vec![Span::Strong(vec![Span::Text("strong heading")])]
+                        vec![Span::Strong(vec![Span::Text("strong heading")], None)]
                     ),
                     Block::List(vec![
                         ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
@@ -1337,7 +1372,7 @@ mod tests {
                 vec![Block::Heading(
                     HLevel::H2,
                     vec![
-                        Span::Strong(vec![Span::Text("strong heading\n  - l1")]),
+                        Span::Strong(vec![Span::Text("strong heading\n  - l1")], None),
                         Span::Text("\n  - l2")
                     ]
                 )]
@@ -1378,13 +1413,17 @@ mod tests {
                         "loc",
                         vec![
                             Span::Text("text "),
-                            Span::Verbatim("`", "`", "v"),
+                            Span::Verbatim("`", "`", "v", None),
                             Span::Text(" "),
-                            Span::Strong(vec![
-                                Span::Text("a"),
-                                Span::Emphasis(vec![Span::Text("b"),])
-                            ])
-                        ]
+                            Span::Strong(
+                                vec![
+                                    Span::Text("a"),
+                                    Span::Emphasis(vec![Span::Text("b"),], None)
+                                ],
+                                None
+                            )
+                        ],
+                        None
                     ),
                     Span::Text(" right")
                 ])]
