@@ -97,7 +97,7 @@ pub enum Span<'a> {
     EOM,
     // Tags with Attributes
     Link(&'a str, Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Verbatim(&'a str, &'a str, &'a str, Option<HashMap<&'a str, &'a str>>),
+    Verbatim(&'a str, Option<&'a str>, Option<HashMap<&'a str, &'a str>>),
     Strong(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
     Emphasis(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
     Superscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
@@ -111,7 +111,7 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> S
     match span {
         // Tags with Attributes
         Span::Link(loc, ss, _) => Span::Link(loc, ss, Some(kvs)),
-        Span::Verbatim(start, stop, text, _) => Span::Verbatim(start, stop, text, Some(kvs)),
+        Span::Verbatim(text, format, _) => Span::Verbatim(text, format, Some(kvs)),
         Span::Strong(ss, _) => Span::Strong(ss, Some(kvs)),
         Span::Emphasis(ss, _) => Span::Emphasis(ss, Some(kvs)),
         Span::Superscript(ss, _) => Span::Superscript(ss, Some(kvs)),
@@ -184,7 +184,7 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
     while i.len() > 0 {
         if let Ok((i, evtag)) = tag::<_, &str, ()>("\n")(i) {
             let (content, _) = input.split_at(char_total_length);
-            return Ok((i, Span::Verbatim(svtag, evtag, content, None)));
+            return Ok((i, Span::Verbatim(content, None, None)));
         } else if let Ok((ti, evtag)) = take_while1::<_, &str, ()>(|b| b == '`')(i) {
             if svtag == evtag {
                 let (content, _) = input.split_at(char_total_length);
@@ -192,9 +192,9 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
                 //  `` `verbatim` `` -> <code>`verbatim`</code>
                 let content_trimmed = content.trim();
                 if content_trimmed.starts_with('`') && content_trimmed.ends_with('`') {
-                    return Ok((ti, Span::Verbatim(svtag, evtag, content_trimmed, None)));
+                    return Ok((ti, Span::Verbatim(content_trimmed, None, None)));
                 }
-                return Ok((ti, Span::Verbatim(svtag, evtag, content, None)));
+                return Ok((ti, Span::Verbatim(content, None, None)));
             }
             i = ti;
             char_total_length += evtag.len();
@@ -205,7 +205,7 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
         }
     }
     let (content, _) = input.split_at(char_total_length);
-    Ok((i, Span::Verbatim(svtag, i, content, None)))
+    Ok((i, Span::Verbatim(content, None, None)))
 }
 
 //{=format #identifier .class key=value key="value" %comment%}
@@ -397,6 +397,14 @@ fn spans<'a, 'b>(
                         ss.push(s);
                         text_start = input;
                         i = input;
+                    } else if let Span::Verbatim(content, _, _) = s {
+                        if let Ok((input, format)) = preceded(tag("="), key)(i) {
+                            ss.push(Span::Verbatim(content, Some(format), None));
+                            text_start = input;
+                            i = input;
+                        } else {
+                            ss.push(s);
+                        }
                     } else {
                         ss.push(s);
                     }
@@ -433,7 +441,7 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
         .into_iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Verbatim(_, _, t, _) | Span::Hash(t) => vec![t],
+                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(t) => vec![t],
                 Span::Link(s, vs, _) => {
                     if vs.len() > 0 {
                         contents(vs)
@@ -928,12 +936,12 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_text() {
         assert_eq!(
-            document("left ``verbatim`` right"),
+            document("left ``verbatim``=fmt right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "``", "verbatim", None),
+                    Span::Verbatim("verbatim", Some("fmt"), None),
                     Span::Text(" right")
                 ])]
             ))
@@ -948,7 +956,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "\n", "verbatim", None),
+                    Span::Verbatim("verbatim", None, None),
                     Span::Text(" right")
                 ])]
             ))
@@ -958,12 +966,16 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_with_nonmatching_backtick() {
         assert_eq!(
-            document("left ``ver```batim`` right"),
+            document("left ``ver```batim``{format=fmt} right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "``", "ver```batim", None),
+                    Span::Verbatim(
+                        "ver```batim",
+                        None,
+                        Some(HashMap::from([("format", "fmt")]))
+                    ),
                     Span::Text(" right")
                 ])]
             ))
@@ -978,7 +990,7 @@ mod tests {
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Verbatim("``", "``", "`verbatim`", None),
+                    Span::Verbatim("`verbatim`", None, None),
                     Span::Text(" right")
                 ])]
             ))
@@ -1076,10 +1088,7 @@ mod tests {
                     Span::Text("left "),
                     Span::Link(
                         "loc",
-                        vec![
-                            Span::Text("text "),
-                            Span::Verbatim("`", "`", "verbatim", None)
-                        ],
+                        vec![Span::Text("text "), Span::Verbatim("verbatim", None, None)],
                         None
                     ),
                     Span::Text(" right")
@@ -1422,7 +1431,7 @@ mod tests {
                         "loc",
                         vec![
                             Span::Text("text "),
-                            Span::Verbatim("`", "`", "v", None),
+                            Span::Verbatim("v", None, None),
                             Span::Text(" "),
                             Span::Strong(
                                 vec![
