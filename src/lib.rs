@@ -428,9 +428,11 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
             let rs = match result {
                 Span::Text(t) | Span::Verbatim(_, _, t, _) | Span::Hash(t) => vec![t],
                 Span::Link(s, vs, _) => {
-                    let mut ss = vec![s];
-                    ss.extend(contents(vs));
-                    ss
+                    if vs.len() > 0 {
+                        contents(vs)
+                    } else {
+                        vec![s]
+                    }
                 }
                 Span::Strong(vs, _)
                 | Span::Emphasis(vs, _)
@@ -1434,7 +1436,7 @@ mod tests {
                 let ts = contents(ss.to_vec());
                 assert_eq!(
                     ts,
-                    vec!["left ", "\n", "loc", "text ", "v", " ", "a", "b", " right"]
+                    vec!["left ", "\n", "text ", "v", " ", "a", "b", " right"]
                 );
             } else {
                 panic!("Not able to get span from paragragh within vector {:?}", v);
