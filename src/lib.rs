@@ -38,9 +38,13 @@ fn key<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
     // let (input, (k, _)) = consumed(tuple((alpha1, many0(alt((alphanumeric0, is_a("_")))))))(input)?;
     is_not("= }\t\n\r")(input)
 }
+fn esc_value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+    let (input, (es, _)) = consumed(preceded(tag("\\"), anychar))(input)?;
+    Ok((input, es))
+}
 fn value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
     // is_not(" }\t\n\r")(input)
-    let (input, (v, _)) = consumed(many1(alt((tag("\\ "), is_not(" }\t\n\r\\")))))(input)?;
+    let (input, (v, _)) = consumed(many1(alt((esc_value, is_not(" }\t\n\r\\")))))(input)?;
     Ok((input, v))
 }
 fn attributes<'a>(input: &'a str) -> IResult<&'a str, HashMap<&'a str, &'a str>> {
