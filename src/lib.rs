@@ -1,11 +1,11 @@
 use nom::branch::alt;
-use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
+use nom::bytes::complete::{escaped, is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, char, digit1, line_ending, not_line_ending, space0, space1,
+    alpha1, anychar, char, digit1, line_ending, not_line_ending, one_of, space0, space1,
 };
 use nom::character::is_digit;
 use nom::combinator::{cond, consumed, eof, not, opt, peek};
-use nom::multi::{many0, separated_list1};
+use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
@@ -39,7 +39,9 @@ fn key<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
     is_not("= }\t\n\r")(input)
 }
 fn value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
-    is_not(" }\t\n\r")(input)
+    // is_not(" }\t\n\r")(input)
+    let (input, (v, _)) = consumed(many1(alt((tag("\\ "), is_not(" }\t\n\r\\")))))(input)?;
+    Ok((input, v))
 }
 fn attributes<'a>(input: &'a str) -> IResult<&'a str, HashMap<&'a str, &'a str>> {
     let (input, kvs) = delimited(
@@ -114,7 +116,7 @@ fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
 }
 
 // LineBreak =  { "\\" ~ &NEWLINE }
-fn escaped<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn esc<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, e) = preceded(
         tag("\\"),
         alt((tag(" "), line_ending, take_while_m_n(1, 1, |c| c != ' '))),
@@ -341,8 +343,7 @@ fn spans<'a, 'b>(
             text_start = input;
             i = input;
             ss.push(s);
-        } else if let Ok((input, s)) =
-            alt((eom, escaped, verbatim, hash, link, bracket, nobracket))(i)
+        } else if let Ok((input, s)) = alt((eom, esc, verbatim, hash, link, bracket, nobracket))(i)
         {
             boundary = false;
             if char_total_length > 0 {
@@ -1101,6 +1102,24 @@ mod tests {
                     Span::Attribute(
                         Box::new(Span::Link("loc", vec![])),
                         HashMap::from([("k1", "v1",), ("k_2", "v_2")])
+                    )
+                ])]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_block_paragraph_link_space_valued_attributes() {
+        let doc = document(r#"left [[loc]]{k1=v1 k_2=v\ 2}"#);
+        assert_eq!(
+            doc,
+            Ok((
+                "",
+                vec![Block::Paragraph(vec![
+                    Span::Text("left "),
+                    Span::Attribute(
+                        Box::new(Span::Link("loc", vec![])),
+                        HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])
                     )
                 ])]
             ))
