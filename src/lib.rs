@@ -213,10 +213,17 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
 fn field(input: &str) -> IResult<&str, &str> {
     is_not(" \t\r\n]")(input)
 }
+fn hash_field(input: &str) -> IResult<&str, &str> {
+    let (input, (v, _)) = consumed(tuple((is_not(" \t\n\r]#"), opt(is_not("\t\r\n]#")))))(input)?;
+    // NOTE: We may want to add any trailing spaces that where trimmed  back to input
+    // as that could end up joining  words together that where seperated by closing tags.
+    let v = v.trim();
+    Ok((input, v))
+}
 
 // HashTag   =  { Edge ~ Hash ~ Location }
 fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
-    let (i, h) = preceded(tag("#"), field)(input)?;
+    let (i, h) = preceded(tag("#"), hash_field)(input)?;
     Ok((i, Span::Hash(h)))
 }
 
@@ -1011,12 +1018,12 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_field_newline() {
         assert_eq!(
-            document("left #hash\nnext line"),
+            document("left #hash 1 \nnext line"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
                     Span::Text("left "),
-                    Span::Hash("hash"),
+                    Span::Hash("hash 1"),
                     Span::Text("\nnext line")
                 ])]
             ))
