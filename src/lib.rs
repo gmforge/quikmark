@@ -182,7 +182,7 @@ fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let mut char_total_length: usize = 0;
     let mut i = input;
     while i.len() > 0 {
-        if let Ok((i, evtag)) = tag::<_, &str, ()>("\n")(i) {
+        if let Ok((i, _evtag)) = tag::<_, &str, ()>("\n")(i) {
             let (content, _) = input.split_at(char_total_length);
             return Ok((i, Span::Verbatim(content, None, None)));
         } else if let Ok((ti, evtag)) = take_while1::<_, &str, ()>(|b| b == '`')(i) {
@@ -824,8 +824,27 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
     }
 }
 
+// TODO: change tag's vector of strings to Hash types
+struct Document<'a> {
+    blocks: Vec<Block<'a>>,
+    references: Option<HashMap<&'a str, Block<'a>>>,
+    tags: Option<HashMap<&'a str, Vec<&'a str>>>,
+}
+
+pub fn document<'a>(input: &'a str) -> IResult<&'a str, Document<'a>> {
+    let (i, bs) = blocks(input, None)?;
+    Ok((
+        i,
+        Document {
+            blocks: bs,
+            references: None, // Some(HashMap::new()),
+            tags: None,       // Some(HashMap::new()),
+        },
+    ))
+}
+
 // Document = { Block* ~ NEWLINE* ~ EOI }
-pub fn document<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
+pub fn ast<'a>(input: &'a str) -> IResult<&'a str, Vec<Block<'a>>> {
     let (i, bs) = blocks(input, None)?;
     Ok((i, bs))
 }
@@ -837,7 +856,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_line_break() {
         assert_eq!(
-            document("line\\\n"),
+            ast("line\\\n"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -851,7 +870,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_nbsp() {
         assert_eq!(
-            document("left\\ right"),
+            ast("left\\ right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -866,7 +885,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_edge_text() {
         assert_eq!(
-            document("left *strong* right"),
+            ast("left *strong* right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -881,7 +900,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_edge_textedge_text() {
         assert_eq!(
-            document("l _*s* e_ r"),
+            ast("l _*s* e_ r"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -899,7 +918,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_edgetext_textedge_text() {
         assert_eq!(
-            document("l _e1 *s* e2_ r"),
+            ast("l _e1 *s* e2_ r"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -921,7 +940,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_edge_edge_text() {
         assert_eq!(
-            document("l _*s*_ r"),
+            ast("l _*s*_ r"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -936,7 +955,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_text() {
         assert_eq!(
-            document("left ``verbatim``=fmt right"),
+            ast("left ``verbatim``=fmt right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -951,7 +970,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_newline() {
         assert_eq!(
-            document("left ``verbatim\n right"),
+            ast("left ``verbatim\n right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -966,7 +985,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_with_nonmatching_backtick() {
         assert_eq!(
-            document("left ``ver```batim``{format=fmt} right"),
+            ast("left ``ver```batim``{format=fmt} right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -985,7 +1004,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_text_verbatim_with_enclosing_backtick() {
         assert_eq!(
-            document("left `` `verbatim` `` right"),
+            ast("left `` `verbatim` `` right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1000,7 +1019,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_empty_eom() {
         assert_eq!(
-            document("left #"),
+            ast("left #"),
             Ok(("", vec![Block::Paragraph(vec![Span::Text("left #")])]))
         );
     }
@@ -1008,7 +1027,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_empty_space() {
         assert_eq!(
-            document("left # "),
+            ast("left # "),
             Ok(("", vec![Block::Paragraph(vec![Span::Text("left # ")])]))
         );
     }
@@ -1016,7 +1035,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_field_eom() {
         assert_eq!(
-            document("left #hash"),
+            ast("left #hash"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1030,7 +1049,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_field_newline() {
         assert_eq!(
-            document("left #hash 1 \nnext line"),
+            ast("left #hash 1 \nnext line"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1045,7 +1064,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_location() {
         assert_eq!(
-            document("left [[loc]]"),
+            ast("left [[loc]]"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1059,7 +1078,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_text_super() {
         assert_eq!(
-            document("left [[loc|text^sup^]] right"),
+            ast("left [[loc|text^sup^]] right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1081,7 +1100,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
         assert_eq!(
-            document("left [[loc|text `verbatim`]] right"),
+            ast("left [[loc|text `verbatim`]] right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1100,7 +1119,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_nested_spans() {
         assert_eq!(
-            document("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
+            ast("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
             Ok((
                 "",
                 vec![Block::Paragraph(vec![
@@ -1128,7 +1147,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_attributes() {
-        let doc = document("left [[loc]]{k1=v1 k_2=v_2}");
+        let doc = ast("left [[loc]]{k1=v1 k_2=v_2}");
         assert_eq!(
             doc,
             Ok((
@@ -1147,7 +1166,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_multiline_attributes() {
-        let doc = document("left [[loc]]{k1=v1\n               k_2=v_2}");
+        let doc = ast("left [[loc]]{k1=v1\n               k_2=v_2}");
         assert_eq!(
             doc,
             Ok((
@@ -1166,7 +1185,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_space_valued_attributes() {
-        let doc = document(r#"left [[loc]]{k1=v1 k_2=v\ 2}"#);
+        let doc = ast(r#"left [[loc]]{k1=v1 k_2=v\ 2}"#);
         assert_eq!(
             doc,
             Ok((
@@ -1186,7 +1205,7 @@ mod tests {
     #[test]
     fn test_block_header_field_paragraph() {
         assert_eq!(
-            document("## [*strong heading*]"),
+            ast("## [*strong heading*]"),
             Ok((
                 "",
                 vec![Block::Heading(
@@ -1200,7 +1219,7 @@ mod tests {
     #[test]
     fn test_block_header_field_paragraph_starting_text() {
         assert_eq!(
-            document("## header\nnext line [*strong*]\n\nnew paragraph"),
+            ast("## header\nnext line [*strong*]\n\nnew paragraph"),
             Ok((
                 "",
                 vec![
@@ -1220,7 +1239,7 @@ mod tests {
     #[test]
     fn test_block_div_w_para_in_div_w_heading() {
         assert_eq!(
-            document("::: div1\n\n## [*strong heading*]\n\n::: div2\n\n  line"),
+            ast("::: div1\n\n## [*strong heading*]\n\n::: div2\n\n  line"),
             Ok((
                 "",
                 vec![Block::Div(
@@ -1240,7 +1259,7 @@ mod tests {
     #[test]
     fn test_block_div_w_code() {
         assert_eq!(
-            document("::: div1\n\n```code\nline1\n````\nline3\n```\n\n:::"),
+            ast("::: div1\n\n```code\nline1\n````\nline3\n```\n\n:::"),
             Ok((
                 "",
                 vec![Block::Div(
@@ -1254,7 +1273,7 @@ mod tests {
     #[test]
     fn test_block_unordered_list() {
         assert_eq!(
-            document("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
+            ast("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
             Ok((
                 "",
                 vec![Block::List(vec![
@@ -1285,7 +1304,7 @@ mod tests {
     #[test]
     fn test_block_unordered_list_singleline() {
         assert_eq!(
-            document("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
+            ast("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
             Ok((
                 "",
                 vec![Block::List(vec![
@@ -1316,7 +1335,7 @@ mod tests {
     #[test]
     fn test_block_ordered_list() {
         assert_eq!(
-            document("a) l1\n\n(B) l2\n\n  1. l2,1"),
+            ast("a) l1\n\n(B) l2\n\n  1. l2,1"),
             Ok((
                 "",
                 vec![Block::List(vec![
@@ -1342,7 +1361,7 @@ mod tests {
     #[test]
     fn test_block_definition_list() {
         assert_eq!(
-            document(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
+            ast(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
             Ok((
                 "",
                 vec![Block::List(vec![
@@ -1364,7 +1383,7 @@ mod tests {
     #[test]
     fn test_block_header_sigleline_unordered_list() {
         assert_eq!(
-            document("## [*strong heading*]\n- l1\n- l2"),
+            ast("## [*strong heading*]\n- l1\n- l2"),
             Ok((
                 "",
                 vec![
@@ -1384,7 +1403,7 @@ mod tests {
     #[test]
     fn test_block_header_sigleline_span_not_list() {
         assert_eq!(
-            document("## [*strong heading\n  - l1*]\n  - l2"),
+            ast("## [*strong heading\n  - l1*]\n  - l2"),
             Ok((
                 "",
                 vec![Block::Heading(
@@ -1401,7 +1420,7 @@ mod tests {
     #[test]
     fn test_block_task_list() {
         assert_eq!(
-            document(": ab\n  - [ ] alpha"),
+            ast(": ab\n  - [ ] alpha"),
             Ok((
                 "",
                 vec![Block::List(vec![ListItem(
@@ -1419,7 +1438,7 @@ mod tests {
 
     #[test]
     fn test_content_of_block_paragraph_link_with_location_and_span() {
-        let doc = document("left \\\n[[loc|text `v` [*a[_b_]*]]] right");
+        let doc = ast("left \\\n[[loc|text `v` [*a[_b_]*]]] right");
         assert_eq!(
             doc,
             Ok((
@@ -1458,7 +1477,10 @@ mod tests {
                 panic!("Not able to get span from paragragh within vector {:?}", v);
             }
         } else {
-            panic!("Not able to get vector of blocks from document {:?}", doc);
+            panic!(
+                "Not able to get vector of blocks from document ast {:?}",
+                doc
+            );
         }
     }
 }
