@@ -825,7 +825,7 @@ fn blocks<'a>(input: &'a str, div: Option<&'a str>) -> IResult<&'a str, Vec<Bloc
 }
 
 // TODO: change tag's vector of strings to Hash types
-struct Document<'a> {
+pub struct Document<'a> {
     blocks: Vec<Block<'a>>,
     references: Option<HashMap<&'a str, Block<'a>>>,
     tags: Option<HashMap<&'a str, Vec<&'a str>>>,
