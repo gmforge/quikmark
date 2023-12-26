@@ -635,7 +635,7 @@ fn ratio<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
 fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     let (i, t) = delimited(
         tag("- ["),
-        alt((tag(" "), tag("x"), ratio, digit1)),
+        alt((tag(" "), tag("x"), tag("X"), ratio, digit1)),
         tag("]"),
     )(input)?;
     Ok((i, Index::Task(t)))
