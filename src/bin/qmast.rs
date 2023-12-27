@@ -1,5 +1,5 @@
 extern crate qwikmark;
-use qwikmark::ast;
+use qwikmark::document;
 use std::{env, error::Error, fs};
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -9,7 +9,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let name = args[1].clone();
     let contents = fs::read_to_string(name)?;
-    let abstract_syntax_tree = ast(&contents);
-    println!("{:?}", abstract_syntax_tree);
+    let doc = document(&contents);
+    match doc {
+        Ok((_, doc)) => println!("{:?}", doc.blocks),
+        Err(e) => panic!("error paring file: {:?}", e),
+    }
     Ok(())
 }
