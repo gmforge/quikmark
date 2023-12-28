@@ -1310,6 +1310,21 @@ mod tests {
     }
 
     #[test]
+    fn test_block_div_para_attrs() {
+        assert_eq!(
+            ast("::: div1\n\n{format=code}\ntest paragraph"),
+            vec![Block::Div(
+                "div1",
+                vec![Block::Paragraph(
+                    vec![Span::Text("test paragraph")],
+                    Some(HashMap::from([("format", "code")]))
+                )],
+                None
+            )]
+        );
+    }
+
+    #[test]
     fn test_block_unordered_list() {
         assert_eq!(
             ast("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
