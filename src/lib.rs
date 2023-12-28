@@ -556,7 +556,8 @@ fn head_start<'a>(input: &'a str) -> IResult<&'a str, HLevel> {
 // Code      = { CodeStart ~ (!CodeStop ~ CodeText)* ~ (CodeStop | &(NEWLINE | EOI)) }
 fn code<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     let (input, sctag) = terminated(take_while_m_n(3, 16, |c| c == '`'), not(tag("`")))(input)?;
-    let (input, format) = opt(field)(input)?;
+    let (input, format) = opt(preceded(tag("="), key))(input)?;
+    // let (input, format) = opt(field)(input)?;
     let (input, _) = opt(alt((line_ending, eof)))(input)?;
     let mut i = input;
     let mut char_total_length: usize = 0;
@@ -1217,7 +1218,7 @@ mod tests {
     #[test]
     fn test_block_div_w_code() {
         assert_eq!(
-            ast("::: div1\n\n```code\nline1\n````\nline3\n```\n\n:::\n"),
+            ast("::: div1\n\n```=code\nline1\n````\nline3\n```\n\n:::\n"),
             vec![Block::Div(
                 "div1",
                 vec![Block::Code(Some("code"), "line1\n````\nline3")]
