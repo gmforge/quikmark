@@ -698,7 +698,11 @@ fn is_list_singleline_tag<'a>(new: bool, input: &'a str) -> IResult<&'a str, boo
     {
         Ok((input, true))
     } else {
-        Ok((input, false))
+        if let (input, Some(_)) = opt(tuple((line_ending, cond(new, space0), tag("{"))))(input)? {
+            Ok((input, true))
+        } else {
+            Ok((input, false))
+        }
     }
 }
 
@@ -713,11 +717,13 @@ fn list_block<'a>(
     input: &'a str,
     depth: &'a str,
     index: Index<'a>,
+    attrs: Option<HashMap<&'a str, &'a str>>,
 ) -> IResult<&'a str, Option<Block<'a>>> {
     let mut lis = Vec::new();
     let mut i = input;
     let mut idx = index;
     loop {
+        // let (i, attrs) = opt(terminated(tuple((space0, attributes)), line_ending))(input)?;
         let (input, li) = list_item(i, depth, idx)?;
         i = input;
         lis.push(li);
@@ -731,15 +737,31 @@ fn list_block<'a>(
             break;
         }
     }
-    Ok((i, Some(Block::List(lis, None))))
+    Ok((i, Some(Block::List(lis, attrs))))
 }
 
 fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
-    if let (i, Some((d, index))) = list_tag(input)? {
-        if d.len() <= depth.len() {
-            Ok((input, None))
+    let (i, depth_attrs) = opt(terminated(
+        tuple((line_ending, space0, attributes)),
+        line_ending,
+    ))(input)?;
+    if let (i, Some((d, index))) = list_tag(i)? {
+        if let Some((_, ad, ah)) = depth_attrs {
+            if ad.len() == d.len() {
+                if d.len() <= depth.len() {
+                    Ok((input, None))
+                } else {
+                    list_block(i, d, index, Some(ah))
+                }
+            } else {
+                Ok((input, None))
+            }
         } else {
-            list_block(i, d, index)
+            if d.len() <= depth.len() {
+                Ok((input, None))
+            } else {
+                list_block(i, d, index, None)
+            }
         }
     } else {
         Ok((input, None))
@@ -765,7 +787,7 @@ fn list_item<'a>(
 fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
     if let (i, Some((d, index))) = list_tag(input)? {
         if d == "" {
-            if let (i, Some(lb)) = list_block(i, d, index)? {
+            if let (i, Some(lb)) = list_block(i, d, index, None)? {
                 return Ok((i, lb));
             }
         }
@@ -1357,6 +1379,51 @@ mod tests {
                     ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
                 ],
                 None
+            )]
+        );
+    }
+
+    #[test]
+    fn test_block_unordered_list_singleline_w_attrs() {
+        assert_eq!(
+            ast(r#"{k1=v1}
+- l1
+- l2
+  {k2=v2}
+  - l2,1
+  - l2,2
+    - l2,2,1
+  - l2,3
+- l3"#),
+            vec![Block::List(
+                vec![
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
+                    ListItem(
+                        Index::Unordered("-"),
+                        vec![Span::Text("l2")],
+                        Some(Block::List(
+                            vec![
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    vec![Span::Text("l2,2")],
+                                    Some(Block::List(
+                                        vec![ListItem(
+                                            Index::Unordered("-"),
+                                            vec![Span::Text("l2,2,1")],
+                                            None
+                                        )],
+                                        None
+                                    ))
+                                ),
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                            ],
+                            Some(HashMap::from([("k2", "v2")]))
+                        ))
+                    ),
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                ],
+                Some(HashMap::from([("k1", "v1")]))
             )]
         );
     }
