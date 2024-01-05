@@ -10,6 +10,7 @@ use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
 use std::collections::HashMap;
+use std::error::Error;
 
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
@@ -904,15 +905,15 @@ pub struct Document<'a> {
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
-pub fn document<'a>(input: &'a str) -> IResult<&'a str, Document<'a>> {
-    Ok((
-        "",
-        Document {
-            blocks: blocks(&input, false, None)?.1,
+pub fn document<'a>(input: &'a str) -> Result<Document<'a>, Box<dyn Error>> {
+    match blocks(input, false, None) {
+        Ok((_, bs)) => Ok(Document {
+            blocks: bs,
             refs: None,
             tags: None,
-        },
-    ))
+        }),
+        Err(e) => panic!("error parcing input: {:?}", e),
+    }
 }
 
 #[cfg(test)]
@@ -920,7 +921,7 @@ mod tests {
     use super::*;
 
     fn ast(input: &str) -> Vec<Block> {
-        let (_, doc) = document(input).unwrap();
+        let doc = document(input).unwrap();
         doc.blocks
     }
 

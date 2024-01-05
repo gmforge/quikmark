@@ -8,11 +8,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // NOTE: Verbatim cannot be nested
     let args: Vec<String> = env::args().collect();
     let name = args[1].clone();
-    let contents = fs::read_to_string(name)?;
+    let contents = fs::read_to_string(&name)?;
     let doc = document(&contents);
     match doc {
-        Ok((_, doc)) => println!("{:?}", doc.blocks),
-        Err(e) => panic!("error paring file: {:?}", e),
+        Ok(doc) => println!("{:?}", doc.blocks),
+        Err(e) => panic!("file: {:?}, {:?}", &name, e),
     }
     Ok(())
 }
