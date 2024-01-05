@@ -96,7 +96,12 @@ pub enum Span<'a> {
     Hash(&'a str),
     EOM,
     // Tags with Attributes
-    Link(&'a str, Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Link(
+        &'a str,
+        bool,
+        Vec<Span<'a>>,
+        Option<HashMap<&'a str, &'a str>>,
+    ),
     Verbatim(&'a str, Option<&'a str>, Option<HashMap<&'a str, &'a str>>),
     Strong(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
     Emphasis(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
@@ -110,7 +115,7 @@ pub enum Span<'a> {
 fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> Span<'a> {
     match span {
         // Tags with Attributes
-        Span::Link(loc, ss, _) => Span::Link(loc, ss, Some(kvs)),
+        Span::Link(loc, e, ss, _) => Span::Link(loc, e, ss, Some(kvs)),
         Span::Verbatim(text, format, _) => Span::Verbatim(text, format, Some(kvs)),
         Span::Strong(ss, _) => Span::Strong(ss, Some(kvs)),
         Span::Emphasis(ss, _) => Span::Emphasis(ss, Some(kvs)),
@@ -303,9 +308,10 @@ fn locator(input: &str) -> IResult<&str, &str> {
 
 // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
 fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
-    let (i, l) = preceded(tag("[["), locator)(input)?;
+    let (i, (e, l)) = tuple((opt(tag("!")), preceded(tag("[["), locator)))(input)?;
+    let embed = if let Some(_) = e { true } else { false };
     let (i, ss) = spans(i, Some("]]"), None)?;
-    Ok((i, Span::Link(l, ss, None)))
+    Ok((i, Span::Link(l, embed, ss, None)))
 }
 
 // Char      =  { !NEWLINE ~ "\\"? ~ ANY }
@@ -442,7 +448,7 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
                 Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(t) => vec![t],
-                Span::Link(s, vs, _) => {
+                Span::Link(s, _, vs, _) => {
                     if vs.len() > 0 {
                         contents(vs)
                     } else {
@@ -1119,9 +1125,9 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_location() {
         assert_eq!(
-            ast("left [[loc]]"),
+            ast("left ![[loc]]"),
             vec![Block::Paragraph(
-                vec![Span::Text("left "), Span::Link("loc", vec![], None)],
+                vec![Span::Text("left "), Span::Link("loc", true, vec![], None)],
                 None
             )]
         );
@@ -1136,6 +1142,7 @@ mod tests {
                     Span::Text("left "),
                     Span::Link(
                         "loc",
+                        false,
                         vec![
                             Span::Text("text"),
                             Span::Superscript(vec![Span::Text("sup")], None)
@@ -1152,12 +1159,13 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
         assert_eq!(
-            ast("left [[loc|text `verbatim`]] right"),
+            ast("left ![[loc|text `verbatim`]] right"),
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
+                        true,
                         vec![Span::Text("text "), Span::Verbatim("verbatim", None, None)],
                         None
                     ),
@@ -1198,7 +1206,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_attributes() {
-        let doc = ast("left [[loc]]{k1=v1 k_2=v_2}");
+        let doc = ast("left ![[loc]]{k1=v1 k_2=v_2}");
         assert_eq!(
             doc,
             vec![Block::Paragraph(
@@ -1206,6 +1214,7 @@ mod tests {
                     Span::Text("left "),
                     Span::Link(
                         "loc",
+                        true,
                         vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     )
@@ -1225,6 +1234,7 @@ mod tests {
                     Span::Text("left "),
                     Span::Link(
                         "loc",
+                        false,
                         vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     ),
@@ -1244,6 +1254,7 @@ mod tests {
                     Span::Text("left "),
                     Span::Link(
                         "loc",
+                        false,
                         vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])),
                     )
@@ -1683,7 +1694,7 @@ mod tests {
 
     #[test]
     fn test_content_of_block_paragraph_link_with_location_and_span() {
-        let doc = ast("left \\\n[[loc|text `v` [*a[_b_]*]]] right");
+        let doc = ast("left \\\n![[loc|text `v` [*a[_b_]*]]] right");
         assert_eq!(
             doc,
             vec![Block::Paragraph(
@@ -1692,6 +1703,7 @@ mod tests {
                     Span::LineBreak("\n"),
                     Span::Link(
                         "loc",
+                        true,
                         vec![
                             Span::Text("text "),
                             Span::Verbatim("v", None, None),
