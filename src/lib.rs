@@ -11,6 +11,7 @@ use nom::IResult;
 use phf::phf_map;
 use std::collections::HashMap;
 use std::error::Error;
+use std::fmt;
 
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
@@ -461,6 +462,28 @@ pub enum HashTag {
     // leaving two separate Numbers and loss of
     // their association.
     Num(isize),
+}
+
+impl fmt::Display for HashTag {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            HashTag::Space => write!(f, "-"),
+            HashTag::Str(s) => write!(f, "{}", &s),
+            HashTag::Num(n) => write!(f, "{}", n.to_string()),
+        }
+    }
+}
+
+pub fn htindex(hts: Vec<HashTag>) -> String {
+    let mut s = String::new();
+    for ht in hts {
+        match ht {
+            HashTag::Space => s += "-",
+            HashTag::Str(a) => s += &a,
+            HashTag::Num(n) => s += &n.to_string(),
+        }
+    }
+    s
 }
 
 // Tags turns contents into hash tags type that may be used for ordering
@@ -1846,7 +1869,9 @@ mod tests {
                     HashTag::Space,
                     HashTag::Str("right".to_string())
                 ]
-            )
+            );
+            let s = htindex(hts);
+            assert_eq!(s, "left-text-32--32v-ab-right")
         } else {
             panic!(
                 "Not able to get span from paragragh within vector {:?}",
