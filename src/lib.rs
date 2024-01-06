@@ -1,7 +1,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, anychar, char, digit1, line_ending, not_line_ending, space0, space1,
+    alpha1, anychar, char, digit1, line_ending, multispace1, not_line_ending, space0, space1,
 };
 use nom::character::is_digit;
 use nom::combinator::{cond, consumed, eof, not, opt, peek, value};
@@ -440,6 +440,105 @@ fn spans<'a, 'b>(
         }
     }
     Ok((text_start, ss))
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
+pub enum HashTag {
+    // All adjacent non alphanumerical content
+    // will be turned into a space which will
+    // be represented in the hashtag as a single
+    // dash "-" character
+    Space,
+    // All adjacent alpha content will be concatenated
+    // into a string value
+    Str(String),
+    // All numerical data will be turnined into a
+    // signed integer and represented a string of
+    // numerical characters preceded with a single
+    // dash "-" if negative. This will be the only
+    // time that two dashes "-" will be adjacent.
+    // Decimal points are turned into a space,
+    // leaving two separate Numbers and loss of
+    // their association.
+    Num(isize),
+}
+
+// Tags turns contents into hash tags type that may be used for ordering
+// anchor strings for referencing/indexing, or filtering.
+pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
+    let (mut hts, ht) = contents
+        .iter()
+        .fold((Vec::new(), None), |(mut hts, mut ht), c| {
+            let mut i = *c;
+            while i != "" {
+                if let Ok((c, (cd, (s, d)))) =
+                    consumed(tuple((opt(tag::<&str, &str, ()>("-")), digit1)))(i)
+                {
+                    let mut dash_is_space = false;
+                    let d = if let Some(HashTag::Str(_)) = ht {
+                        dash_is_space = true;
+                        d
+                    } else {
+                        cd
+                    };
+                    if let Ok(d) = isize::from_str_radix(d, 10) {
+                        if let Some(oht) = ht {
+                            hts.push(oht);
+                            if let (true, Some(_)) = (dash_is_space, s) {
+                                hts.push(HashTag::Space);
+                            }
+                            ht = None;
+                        }
+                        hts.push(HashTag::Num(d));
+                    } else {
+                        match ht {
+                            Some(HashTag::Str(nas)) => {
+                                ht = Some(HashTag::Str(nas + cd));
+                            }
+                            Some(HashTag::Space) => {
+                                hts.push(HashTag::Space);
+                                ht = Some(HashTag::Str(cd.to_string()));
+                            }
+                            Some(HashTag::Num(_)) | None => {
+                                ht = Some(HashTag::Str(cd.to_string()));
+                            }
+                        }
+                    }
+                    i = c;
+                } else if let Ok((c, a)) = alpha1::<&str, ()>(i) {
+                    match ht {
+                        Some(HashTag::Str(nas)) => {
+                            ht = Some(HashTag::Str(nas + a));
+                        }
+                        Some(HashTag::Space) => {
+                            hts.push(HashTag::Space);
+                            ht = Some(HashTag::Str(a.to_string()));
+                        }
+                        Some(HashTag::Num(_)) | None => {
+                            ht = Some(HashTag::Str(a.to_string()));
+                        }
+                    }
+                    i = c;
+                } else if let Ok((c, _s)) = alt((multispace1::<&str, ()>, value(" ", anychar)))(i) {
+                    match ht {
+                        Some(oht @ HashTag::Str(_)) => {
+                            hts.push(oht);
+                            ht = Some(HashTag::Space);
+                        }
+                        Some(HashTag::Space) => {}
+                        Some(HashTag::Num(_)) | None => {
+                            ht = Some(HashTag::Space);
+                        }
+                    }
+                    i = c;
+                }
+            }
+            (hts, ht)
+        });
+    if let Some(ht) = ht {
+        hts.push(ht);
+    }
+    hts
 }
 
 // Contents concatenates the text within the nested vectors of spans
@@ -1694,8 +1793,8 @@ mod tests {
     }
 
     #[test]
-    fn test_content_of_block_paragraph_link_with_location_and_span() {
-        let doc = ast("left \\\n![[loc|text `v` [*a[_b_]*]]] right");
+    fn test_content_and_hash_of_block_paragraph_link_with_location_and_span() {
+        let doc = ast("left \\\n![[loc|text-32 `-32v` [*a[_b_]*]]] right");
         assert_eq!(
             doc,
             vec![Block::Paragraph(
@@ -1706,8 +1805,8 @@ mod tests {
                         "loc",
                         true,
                         vec![
-                            Span::Text("text "),
-                            Span::Verbatim("v", None, None),
+                            Span::Text("text-32 "),
+                            Span::Verbatim("-32v", None, None),
                             Span::Text(" "),
                             Span::Strong(
                                 vec![
@@ -1728,8 +1827,26 @@ mod tests {
             let ts = contents(ss.to_vec());
             assert_eq!(
                 ts,
-                vec!["left ", "\n", "text ", "v", " ", "a", "b", " right"]
+                vec!["left ", "\n", "text-32 ", "-32v", " ", "a", "b", " right"]
             );
+            let hts = hashtags(ts);
+            assert_eq!(
+                hts,
+                vec![
+                    HashTag::Str("left".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("text".to_string()),
+                    HashTag::Space,
+                    HashTag::Num(32),
+                    HashTag::Space,
+                    HashTag::Num(-32),
+                    HashTag::Str("v".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("ab".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("right".to_string())
+                ]
+            )
         } else {
             panic!(
                 "Not able to get span from paragragh within vector {:?}",
