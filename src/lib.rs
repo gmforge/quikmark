@@ -513,6 +513,8 @@ pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
                                 hts.push(HashTag::Space);
                             }
                             ht = None;
+                        } else if let (Some(_), 0) = (n, hts.len()) {
+                            hts.push(HashTag::Space);
                         }
                         hts.push(HashTag::Num(d));
                     } else {
@@ -1819,7 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn test_content_and_hash_of_block_paragraph_link_with_location_and_span() {
+    fn test_content_and_hashtag_index_of_block_paragraph_link_with_location_and_span() {
         let doc = ast("Left \\\n![[loc|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n");
         assert_eq!(
             doc,
@@ -1886,6 +1888,32 @@ mod tests {
                 "Not able to get span from paragragh within vector {:?}",
                 doc
             );
+        }
+    }
+
+    #[test]
+    fn test_hashtag_index_of_block_heading_link_span() {
+        let doc = ast("# ![[loc|Level 0]]");
+        if let Block::Heading(_, ss, _, _) = &doc[0] {
+            let ts = contents(ss.to_vec());
+            let hts = hashtags(ts);
+            let s = htindex(hts);
+            assert_eq!(s, "level-0");
+        } else {
+            panic!("Not able to get span from heading {:?}", doc);
+        }
+    }
+
+    #[test]
+    fn test_hashtag_index_of_block_heading_negative_digit_only() {
+        let doc = ast("# -33-32 31 -30");
+        if let Block::Heading(_, ss, _, _) = &doc[0] {
+            let ts = contents(ss.to_vec());
+            let hts = hashtags(ts);
+            let s = htindex(hts);
+            assert_eq!(s, "--33-32-31--30");
+        } else {
+            panic!("Not able to get span from heading {:?}", doc);
         }
     }
 }
