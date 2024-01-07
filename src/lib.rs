@@ -479,7 +479,7 @@ pub fn htindex(hts: Vec<HashTag>) -> String {
     for ht in hts {
         match ht {
             HashTag::Space => s += "-",
-            HashTag::Str(a) => s += &a,
+            HashTag::Str(a) => s += &a.to_lowercase(),
             HashTag::Num(n) => s += &n.to_string(),
         }
     }
@@ -494,20 +494,22 @@ pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
         .fold((Vec::new(), None), |(mut hts, mut ht), c| {
             let mut i = *c;
             while i != "" {
-                if let Ok((c, (cd, (s, d)))) =
+                if let Ok((c, (cd, (n, d)))) =
                     consumed(tuple((opt(tag::<&str, &str, ()>("-")), digit1)))(i)
                 {
-                    let mut dash_is_space = false;
-                    let d = if let Some(HashTag::Str(_)) = ht {
-                        dash_is_space = true;
-                        d
+                    let (d, dash_is_space) = if let Some(HashTag::Str(_)) = ht {
+                        (d, true)
                     } else {
-                        cd
+                        (cd, false)
                     };
                     if let Ok(d) = isize::from_str_radix(d, 10) {
                         if let Some(oht) = ht {
-                            hts.push(oht);
-                            if let (true, Some(_)) = (dash_is_space, s) {
+                            if let HashTag::Str(s) = oht {
+                                hts.push(HashTag::Str(s.to_lowercase()));
+                            } else {
+                                hts.push(oht);
+                            }
+                            if let (true, Some(_)) = (dash_is_space, n) {
                                 hts.push(HashTag::Space);
                             }
                             ht = None;
@@ -544,8 +546,8 @@ pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
                     i = c;
                 } else if let Ok((c, _s)) = alt((multispace1::<&str, ()>, value(" ", anychar)))(i) {
                     match ht {
-                        Some(oht @ HashTag::Str(_)) => {
-                            hts.push(oht);
+                        Some(HashTag::Str(s)) => {
+                            hts.push(HashTag::Str(s.to_lowercase()));
                             ht = Some(HashTag::Space);
                         }
                         Some(HashTag::Space) => {}
@@ -558,8 +560,9 @@ pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
             }
             (hts, ht)
         });
-    if let Some(ht) = ht {
-        hts.push(ht);
+    // Do NOT push last space, only remain string
+    if let Some(HashTag::Str(s)) = ht {
+        hts.push(HashTag::Str(s.to_lowercase()));
     }
     hts
 }
@@ -1817,12 +1820,12 @@ mod tests {
 
     #[test]
     fn test_content_and_hash_of_block_paragraph_link_with_location_and_span() {
-        let doc = ast("left \\\n![[loc|text-32 `-32v` [*a[_b_]*]]] right");
+        let doc = ast("Left \\\n![[loc|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n");
         assert_eq!(
             doc,
             vec![Block::Paragraph(
                 vec![
-                    Span::Text("left "),
+                    Span::Text("Left "),
                     Span::LineBreak("\n"),
                     Span::Link(
                         "loc",
@@ -1834,14 +1837,16 @@ mod tests {
                             Span::Strong(
                                 vec![
                                     Span::Text("a"),
-                                    Span::Emphasis(vec![Span::Text("b"),], None)
+                                    Span::Emphasis(vec![Span::Text("B"),], None)
                                 ],
                                 None
                             )
                         ],
                         None
                     ),
-                    Span::Text(" right")
+                    Span::Text(" Right "),
+                    Span::Hash("Level 1"),
+                    Span::Text("\n")
                 ],
                 None
             )]
@@ -1850,7 +1855,7 @@ mod tests {
             let ts = contents(ss.to_vec());
             assert_eq!(
                 ts,
-                vec!["left ", "\n", "text-32 ", "-32v", " ", "a", "b", " right"]
+                vec!["Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "Level 1", "\n"]
             );
             let hts = hashtags(ts);
             assert_eq!(
@@ -1867,11 +1872,15 @@ mod tests {
                     HashTag::Space,
                     HashTag::Str("ab".to_string()),
                     HashTag::Space,
-                    HashTag::Str("right".to_string())
+                    HashTag::Str("right".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("level".to_string()),
+                    HashTag::Space,
+                    HashTag::Num(1)
                 ]
             );
             let s = htindex(hts);
-            assert_eq!(s, "left-text-32--32v-ab-right")
+            assert_eq!(s, "left-text-32--32v-ab-right-level-1")
         } else {
             panic!(
                 "Not able to get span from paragragh within vector {:?}",
