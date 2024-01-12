@@ -12,7 +12,6 @@ use phf::phf_map;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::rc::Rc;
 
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
@@ -102,17 +101,17 @@ pub enum Span<'a> {
     Link(
         &'a str,
         bool,
-        Rc<[Span<'a>]>,
+        Vec<Span<'a>>,
         Option<HashMap<&'a str, &'a str>>,
     ),
     Verbatim(&'a str, Option<&'a str>, Option<HashMap<&'a str, &'a str>>),
-    Strong(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
-    Emphasis(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
-    Superscript(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
-    Subscript(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
-    Highlight(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
-    Insert(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
-    Delete(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
+    Strong(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Emphasis(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Superscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Subscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Highlight(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Insert(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Delete(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
 }
 
 fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> Span<'a> {
@@ -337,7 +336,7 @@ fn spans<'a, 'b>(
     input: &'a str,
     closer: Option<&'b str>,
     inlist: Option<bool>,
-) -> IResult<&'a str, Rc<[Span<'a>]>> {
+) -> IResult<&'a str, Vec<Span<'a>>> {
     let mut ss = Vec::new();
     let mut i = input;
     // Loop through text until reach two newlines
@@ -441,7 +440,7 @@ fn spans<'a, 'b>(
             (_, text_start) = text_start.split_at(closer.len());
         }
     }
-    Ok((text_start, ss.into()))
+    Ok((text_start, ss))
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
@@ -489,8 +488,8 @@ pub fn htindex(hts: Vec<HashTag>) -> String {
 
 // Tags turns contents into hash tags type that may be used for ordering
 // anchor strings for referencing/indexing, or filtering.
-pub fn hashtags<'a>(content: Vec<&'a str>) -> Vec<HashTag> {
-    let (mut hts, ht) = content
+pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
+    let (mut hts, ht) = contents
         .iter()
         .fold((Vec::new(), None), |(mut hts, mut ht), c| {
             let mut i = *c;
@@ -571,17 +570,17 @@ pub fn hashtags<'a>(content: Vec<&'a str>) -> Vec<HashTag> {
 }
 
 // Contents concatenates the text within the nested vectors of spans
-pub fn contents<'a>(outer: Rc<[Span<'a>]>) -> Vec<&'a str> {
+pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
     outer
         .into_iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(t) => vec![*t],
+                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(t) => vec![t],
                 Span::Link(s, _, vs, _) => {
                     if vs.len() > 0 {
-                        contents(vs.clone())
+                        contents(vs)
                     } else {
-                        vec![*s]
+                        vec![s]
                     }
                 }
                 Span::Strong(vs, _)
@@ -590,8 +589,8 @@ pub fn contents<'a>(outer: Rc<[Span<'a>]>) -> Vec<&'a str> {
                 | Span::Subscript(vs, _)
                 | Span::Highlight(vs, _)
                 | Span::Insert(vs, _)
-                | Span::Delete(vs, _) => contents(vs.clone()),
-                Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![*s],
+                | Span::Delete(vs, _) => contents(vs),
+                Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![s],
                 Span::EOM => vec![],
             };
             unrolled.extend(rs);
@@ -627,21 +626,21 @@ pub fn contents<'a>(outer: Rc<[Span<'a>]>) -> Vec<&'a str> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Block<'a> {
     // Div(name, [Block], attributes)
-    Div(&'a str, Rc<[Block<'a>]>, Option<HashMap<&'a str, &'a str>>),
+    Div(&'a str, Vec<Block<'a>>, Option<HashMap<&'a str, &'a str>>),
     //Quote(Vec<Block<'a>>),
     // Heading(level, [Span], [Block], attributes)
     Heading(
         HLevel<'a>,
-        Rc<[Span<'a>]>,
-        Rc<[Block<'a>]>,
+        Vec<Span<'a>>,
+        Vec<Block<'a>>,
         Option<HashMap<&'a str, &'a str>>,
     ),
     // Code(format, [Span::Text], attributes)
     Code(Option<&'a str>, &'a str, Option<HashMap<&'a str, &'a str>>),
     // List(items, attributes)
-    List(Rc<[ListItem<'a>]>, Option<HashMap<&'a str, &'a str>>),
+    List(Vec<ListItem<'a>>, Option<HashMap<&'a str, &'a str>>),
     //Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
-    Paragraph(Rc<[Span<'a>]>, Option<HashMap<&'a str, &'a str>>),
+    Paragraph(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
 }
 
 // H1      = { "#" }
@@ -748,7 +747,7 @@ pub enum Index<'a> {
 pub struct ListItem<'a>(
     Index<'a>,
     // Block::Paragraph(Vec<Span<'a>>),
-    Rc<[Span<'a>]>,
+    Vec<Span<'a>>,
     // Block::List(Vec<ListItem<'a>>),
     Option<Block<'a>>,
 );
@@ -872,7 +871,7 @@ fn list_block<'a>(
             break;
         }
     }
-    Ok((i, Some(Block::List(lis.into(), attrs))))
+    Ok((i, Some(Block::List(lis, attrs))))
 }
 
 fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
@@ -913,7 +912,7 @@ fn list_item<'a>(
     // Or if needs to fail wrap in opt(spans...)
     let (input, ss) = spans(input, None, Some(true))?;
     let (input, slb) = nested_list_block(input, depth)?;
-    Ok((input, ListItem(index, ss.into(), slb)))
+    Ok((input, ListItem(index, ss, slb)))
 }
 
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
@@ -970,7 +969,7 @@ fn blocks<'a>(
     input: &'a str,
     divs: bool,
     refs: Option<HLevel>,
-) -> IResult<&'a str, Rc<[Block<'a>]>> {
+) -> IResult<&'a str, Vec<Block<'a>>> {
     let mut bs = Vec::new();
     // WARN: utilizing multispace here would cause lists that start with spaces
     // to look like new lists that start right after a newline, so cannot greedy
@@ -984,7 +983,7 @@ fn blocks<'a>(
         if divs {
             // Do NOT consume input. Leave cleanup to the div that spawned blocks
             if let Ok((_, Some(true))) = opt(div_close)(i) {
-                return Ok((i, bs.into()));
+                return Ok((i, bs));
             }
         }
         let (input, attrs) = opt(terminated(attributes, line_ending))(i)?;
@@ -998,7 +997,7 @@ fn blocks<'a>(
             if let Some(level) = refs {
                 if level >= hl {
                     // Do NOT consume input until can start new heading block
-                    return Ok((i, bs.into()));
+                    return Ok((i, bs));
                 }
             }
             let (input, head_ss) = spans(input, None, Some(false))?;
@@ -1021,13 +1020,13 @@ fn blocks<'a>(
             bs.push(b);
         }
     }
-    return Ok((i, bs.into()));
+    return Ok((i, bs));
 }
 
 // TODO: change tag's vector of strings to Hash types
 #[derive(Debug, PartialEq, Eq)]
 pub struct Document<'a> {
-    pub blocks: Rc<[Block<'a>]>,
+    pub blocks: Vec<Block<'a>>,
     pub refs: Option<HashMap<&'a str, Block<'a>>>,
     pub tags: Option<HashMap<&'a str, Vec<&'a str>>>,
 }
@@ -1036,7 +1035,7 @@ pub struct Document<'a> {
 pub fn document<'a>(input: &'a str) -> Result<Document<'a>, Box<dyn Error>> {
     match blocks(input, false, None) {
         Ok((_, bs)) => Ok(Document {
-            blocks: bs.into(),
+            blocks: bs,
             refs: None,
             tags: None,
         }),
@@ -1048,7 +1047,7 @@ pub fn document<'a>(input: &'a str) -> Result<Document<'a>, Box<dyn Error>> {
 mod tests {
     use super::*;
 
-    fn ast(input: &str) -> Rc<[Block]> {
+    fn ast(input: &str) -> Vec<Block> {
         let doc = document(input).unwrap();
         doc.blocks
     }
@@ -1057,10 +1056,10 @@ mod tests {
     fn test_block_paragraph_text_line_break() {
         assert_eq!(
             ast("line\\\n"),
-            Rc::from([Block::Paragraph(
-                Rc::from([Span::Text("line"), Span::LineBreak("\n")]),
+            vec![Block::Paragraph(
+                vec![Span::Text("line"), Span::LineBreak("\n")],
                 None
-            )])
+            )]
         );
     }
 
@@ -1068,10 +1067,10 @@ mod tests {
     fn test_block_paragraph_nbsp() {
         assert_eq!(
             ast("left\\ right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([Span::Text("left"), Span::NBWS(" "), Span::Text("right")]),
+            vec![Block::Paragraph(
+                vec![Span::Text("left"), Span::NBWS(" "), Span::Text("right")],
                 None
-            )])
+            )]
         );
     }
 
@@ -1079,14 +1078,14 @@ mod tests {
     fn test_block_paragraph_text_edge_text() {
         assert_eq!(
             ast("left *strong* right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
-                    Span::Strong(Rc::from([Span::Text("strong")]), None),
+                    Span::Strong(vec![Span::Text("strong")], None),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1094,20 +1093,17 @@ mod tests {
     fn test_block_paragraph_text_edge_textedge_text() {
         assert_eq!(
             ast("l _*s* e_ r"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("l "),
                     Span::Emphasis(
-                        Rc::from([
-                            Span::Strong(Rc::from([Span::Text("s")]), None),
-                            Span::Text(" e")
-                        ]),
+                        vec![Span::Strong(vec![Span::Text("s")], None), Span::Text(" e")],
                         None
                     ),
                     Span::Text(" r")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1115,21 +1111,21 @@ mod tests {
     fn test_block_paragraph_text_edgetext_textedge_text() {
         assert_eq!(
             ast("l _e1 *s* e2_ r"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("l "),
                     Span::Emphasis(
-                        Rc::from([
+                        vec![
                             Span::Text("e1 "),
-                            Span::Strong(Rc::from([Span::Text("s")]), None),
+                            Span::Strong(vec![Span::Text("s")], None),
                             Span::Text(" e2")
-                        ]),
+                        ],
                         None
                     ),
                     Span::Text(" r")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1137,17 +1133,14 @@ mod tests {
     fn test_block_paragraph_text_edge_edge_text() {
         assert_eq!(
             ast("l _*s*_ r"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("l "),
-                    Span::Emphasis(
-                        Rc::from([Span::Strong(Rc::from([Span::Text("s")]), None)]),
-                        None
-                    ),
+                    Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")], None)], None),
                     Span::Text(" r")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1155,14 +1148,14 @@ mod tests {
     fn test_block_paragraph_text_verbatim_text() {
         assert_eq!(
             ast("left ``verbatim``=fmt right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Verbatim("verbatim", Some("fmt"), None),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1170,14 +1163,14 @@ mod tests {
     fn test_block_paragraph_text_verbatim_newline() {
         assert_eq!(
             ast("left ``verbatim\n right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Verbatim("verbatim", None, None),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1185,8 +1178,8 @@ mod tests {
     fn test_block_paragraph_text_verbatim_with_nonmatching_backtick() {
         assert_eq!(
             ast("left ``ver```batim``{format=fmt} right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Verbatim(
                         "ver```batim",
@@ -1194,9 +1187,9 @@ mod tests {
                         Some(HashMap::from([("format", "fmt")]))
                     ),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1204,14 +1197,14 @@ mod tests {
     fn test_block_paragraph_text_verbatim_with_enclosing_backtick() {
         assert_eq!(
             ast("left `` `verbatim` `` right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Verbatim("`verbatim`", None, None),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1219,7 +1212,7 @@ mod tests {
     fn test_block_paragraph_hash_empty_eom() {
         assert_eq!(
             ast("left #"),
-            Rc::from([Block::Paragraph(Rc::from([Span::Text("left #")]), None)])
+            vec![Block::Paragraph(vec![Span::Text("left #")], None)]
         );
     }
 
@@ -1227,7 +1220,7 @@ mod tests {
     fn test_block_paragraph_hash_empty_space() {
         assert_eq!(
             ast("left # "),
-            Rc::from([Block::Paragraph(Rc::from([Span::Text("left # ")]), None)])
+            vec![Block::Paragraph(vec![Span::Text("left # ")], None)]
         );
     }
 
@@ -1235,10 +1228,10 @@ mod tests {
     fn test_block_paragraph_hash_field_eom() {
         assert_eq!(
             ast("left #hash"),
-            Rc::from([Block::Paragraph(
-                Rc::from([Span::Text("left "), Span::Hash("hash")]),
+            vec![Block::Paragraph(
+                vec![Span::Text("left "), Span::Hash("hash")],
                 None
-            )])
+            )]
         );
     }
 
@@ -1246,14 +1239,14 @@ mod tests {
     fn test_block_paragraph_hash_field_newline() {
         assert_eq!(
             ast("left #hash 1 \nnext line"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Hash("hash 1"),
                     Span::Text("\nnext line")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1261,13 +1254,10 @@ mod tests {
     fn test_block_paragraph_link_location() {
         assert_eq!(
             ast("left ![[loc]]"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
-                    Span::Text("left "),
-                    Span::Link("loc", true, Rc::from([]), None)
-                ]),
+            vec![Block::Paragraph(
+                vec![Span::Text("left "), Span::Link("loc", true, vec![], None)],
                 None
-            )])
+            )]
         );
     }
 
@@ -1275,22 +1265,22 @@ mod tests {
     fn test_block_paragraph_link_with_location_and_text_super() {
         assert_eq!(
             ast("left [[loc|text^sup^]] right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
                         false,
-                        Rc::from([
+                        vec![
                             Span::Text("text"),
-                            Span::Superscript(Rc::from([Span::Text("sup")]), None)
-                        ]),
+                            Span::Superscript(vec![Span::Text("sup")], None)
+                        ],
                         None
                     ),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1298,19 +1288,19 @@ mod tests {
     fn test_block_paragraph_link_with_location_and_span() {
         assert_eq!(
             ast("left ![[loc|text `verbatim`]] right"),
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
                         true,
-                        Rc::from([Span::Text("text "), Span::Verbatim("verbatim", None, None)]),
+                        vec![Span::Text("text "), Span::Verbatim("verbatim", None, None)],
                         None
                     ),
                     Span::Text(" right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1318,27 +1308,27 @@ mod tests {
     fn test_block_paragraph_nested_spans() {
         assert_eq!(
             ast("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
-                Rc::from([Block::Paragraph(Rc::from([
+                vec![Block::Paragraph(vec![
                   Span::Text("text-left "),
-                  Span::Strong(Rc::from([
+                  Span::Strong(vec![
                     Span::Text("strong-left "),
-                    Span::Emphasis(Rc::from([
+                    Span::Emphasis(vec![
                       Span::Text("emphasis-center")
-                    ]), None),
+                    ], None),
                     Span::Text("\t"),
-                    Span::Insert(Rc::from([
+                    Span::Insert(vec![
                       Span::Text("insert-left "),
-                      Span::Superscript(Rc::from([
+                      Span::Superscript(vec![
                         Span::Text("superscript-center")
-                      ]), None),
+                      ], None),
                       Span::Text(" insert-right")
-                    ]), None),
+                    ], None),
                     Span::Text(" strong-right")
-                  ]), None),
+                  ], None),
                   Span::Text(" text-right")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1347,18 +1337,18 @@ mod tests {
         let doc = ast("left ![[loc]]{k1=v1 k_2=v_2}");
         assert_eq!(
             doc,
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
                         true,
-                        Rc::from([]),
+                        vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     )
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1367,18 +1357,18 @@ mod tests {
         let doc = ast("left [[loc]]{k1=v1\n               k_2=v_2}");
         assert_eq!(
             doc,
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
                         false,
-                        Rc::from([]),
+                        vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     ),
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1387,18 +1377,18 @@ mod tests {
         let doc = ast(r#"left [[loc]]{k1=v1 k_2=v\ 2}"#);
         assert_eq!(
             doc,
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("left "),
                     Span::Link(
                         "loc",
                         false,
-                        Rc::from([]),
+                        vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])),
                     )
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1406,12 +1396,12 @@ mod tests {
     fn test_block_header_field_paragraph() {
         assert_eq!(
             ast("## [*strong heading*]"),
-            Rc::from([Block::Heading(
+            vec![Block::Heading(
                 HLevel::H2,
-                Rc::from([Span::Strong(Rc::from([Span::Text("strong heading")]), None)]),
-                Rc::from([]),
+                vec![Span::Strong(vec![Span::Text("strong heading")], None)],
+                vec![],
                 None
-            )])
+            )]
         );
     }
 
@@ -1419,18 +1409,15 @@ mod tests {
     fn test_block_header_field_paragraph_starting_text() {
         assert_eq!(
             ast("## header\nnext line [*strong*]\n\nnew paragraph"),
-            Rc::from([Block::Heading(
+            vec![Block::Heading(
                 HLevel::H2,
-                Rc::from([
+                vec![
                     Span::Text("header\nnext line "),
-                    Span::Strong(Rc::from([Span::Text("strong")]), None)
-                ]),
-                Rc::from([Block::Paragraph(
-                    Rc::from([Span::Text("new paragraph")]),
-                    None
-                )]),
+                    Span::Strong(vec![Span::Text("strong")], None)
+                ],
+                vec![Block::Paragraph(vec![Span::Text("new paragraph")], None)],
                 None
-            )])
+            )]
         );
     }
 
@@ -1438,20 +1425,20 @@ mod tests {
     fn test_block_div_w_para_in_div_w_heading() {
         assert_eq!(
             ast("::: div1\n\n## [*strong heading*]\n\n::: div2\n\n  line"),
-            Rc::from([Block::Div(
+            vec![Block::Div(
                 "div1",
-                Rc::from([Block::Heading(
+                vec![Block::Heading(
                     HLevel::H2,
-                    Rc::from([Span::Strong(Rc::from([Span::Text("strong heading")]), None)]),
-                    Rc::from([Block::Div(
+                    vec![Span::Strong(vec![Span::Text("strong heading")], None)],
+                    vec![Block::Div(
                         "div2",
-                        Rc::from([Block::Paragraph(Rc::from([Span::Text("  line")]), None)]),
+                        vec![Block::Paragraph(vec![Span::Text("  line")], None)],
                         None
-                    )]),
+                    )],
                     None
-                )]),
+                )],
                 None
-            )])
+            )]
         );
     }
 
@@ -1459,11 +1446,11 @@ mod tests {
     fn test_block_div_w_code() {
         assert_eq!(
             ast("::: div1\n\n```=code\nline1\n````\nline3\n```\n\n:::\n"),
-            Rc::from([Block::Div(
+            vec![Block::Div(
                 "div1",
-                Rc::from([Block::Code(Some("code"), "line1\n````\nline3", None)]),
+                vec![Block::Code(Some("code"), "line1\n````\nline3", None)],
                 None
-            )])
+            )]
         );
     }
 
@@ -1471,15 +1458,15 @@ mod tests {
     fn test_block_div_w_codeattrs() {
         assert_eq!(
             ast("::: div1\n\n{format=code}\n```=fmt\nline1\n````\nline3\n```\n\n:::\n"),
-            Rc::from([Block::Div(
+            vec![Block::Div(
                 "div1",
-                Rc::from([Block::Code(
+                vec![Block::Code(
                     Some("fmt"),
                     "line1\n````\nline3",
                     Some(HashMap::from([("format", "code")]))
-                )]),
+                )],
                 None,
-            )])
+            )]
         );
     }
 
@@ -1487,14 +1474,14 @@ mod tests {
     fn test_block_div_para_attrs() {
         assert_eq!(
             ast("::: div1\n\n{format=code}\ntest paragraph"),
-            Rc::from([Block::Div(
+            vec![Block::Div(
                 "div1",
-                Rc::from([Block::Paragraph(
-                    Rc::from([Span::Text("test paragraph")]),
+                vec![Block::Paragraph(
+                    vec![Span::Text("test paragraph")],
                     Some(HashMap::from([("format", "code")]))
-                )]),
+                )],
                 None
-            )])
+            )]
         );
     }
 
@@ -1502,44 +1489,36 @@ mod tests {
     fn test_block_unordered_list() {
         assert_eq!(
             ast("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
-            Rc::from([Block::List(
-                Rc::from([
-                    ListItem(Index::Unordered("-"), Rc::from([Span::Text("l1")]), None),
+            vec![Block::List(
+                vec![
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
-                        Rc::from([Span::Text("l2")]),
+                        vec![Span::Text("l2")],
                         Some(Block::List(
-                            Rc::from([
+                            vec![
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                                 ListItem(
                                     Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,1")]),
-                                    None
-                                ),
-                                ListItem(
-                                    Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,2")]),
+                                    vec![Span::Text("l2,2")],
                                     Some(Block::List(
-                                        Rc::from([ListItem(
+                                        vec![ListItem(
                                             Index::Unordered("-"),
-                                            Rc::from([Span::Text("l2,2,1")]),
+                                            vec![Span::Text("l2,2,1")],
                                             None
-                                        )]),
+                                        )],
                                         None
                                     ))
                                 ),
-                                ListItem(
-                                    Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,3")]),
-                                    None
-                                )
-                            ]),
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                            ],
                             None
                         ))
                     ),
-                    ListItem(Index::Unordered("-"), Rc::from([Span::Text("l3")]), None)
-                ]),
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1555,44 +1534,36 @@ mod tests {
     - l2,2,1
   - l2,3
 - l3"#),
-            Rc::from([Block::List(
-                Rc::from([
-                    ListItem(Index::Unordered("-"), Rc::from([Span::Text("l1")]), None),
+            vec![Block::List(
+                vec![
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
-                        Rc::from([Span::Text("l2")]),
+                        vec![Span::Text("l2")],
                         Some(Block::List(
-                            Rc::from([
+                            vec![
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                                 ListItem(
                                     Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,1")]),
-                                    None
-                                ),
-                                ListItem(
-                                    Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,2")]),
+                                    vec![Span::Text("l2,2")],
                                     Some(Block::List(
-                                        Rc::from([ListItem(
+                                        vec![ListItem(
                                             Index::Unordered("-"),
-                                            Rc::from([Span::Text("l2,2,1")]),
+                                            vec![Span::Text("l2,2,1")],
                                             None
-                                        )]),
+                                        )],
                                         None
                                     ))
                                 ),
-                                ListItem(
-                                    Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,3")]),
-                                    None
-                                )
-                            ]),
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                            ],
                             Some(HashMap::from([("k2", "v2")]))
                         ))
                     ),
-                    ListItem(Index::Unordered("-"), Rc::from([Span::Text("l3")]), None)
-                ]),
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                ],
                 Some(HashMap::from([("k1", "v1")]))
-            )])
+            )]
         );
     }
 
@@ -1600,44 +1571,36 @@ mod tests {
     fn test_block_unordered_list_singleline() {
         assert_eq!(
             ast("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
-            Rc::from([Block::List(
-                Rc::from([
-                    ListItem(Index::Unordered("-"), Rc::from([Span::Text("l1")]), None),
+            vec![Block::List(
+                vec![
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
-                        Rc::from([Span::Text("l2")]),
+                        vec![Span::Text("l2")],
                         Some(Block::List(
-                            Rc::from([
+                            vec![
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                                 ListItem(
                                     Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,1")]),
-                                    None
-                                ),
-                                ListItem(
-                                    Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,2")]),
+                                    vec![Span::Text("l2,2")],
                                     Some(Block::List(
-                                        Rc::from([ListItem(
+                                        vec![ListItem(
                                             Index::Unordered("-"),
-                                            Rc::from([Span::Text("l2,2,1")]),
+                                            vec![Span::Text("l2,2,1")],
                                             None
-                                        )]),
+                                        )],
                                         None
                                     ))
                                 ),
-                                ListItem(
-                                    Index::Unordered("-"),
-                                    Rc::from([Span::Text("l2,3")]),
-                                    None
-                                )
-                            ]),
+                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                            ],
                             None
                         ))
                     ),
-                    ListItem(Index::Unordered("-"), Rc::from([Span::Text("l3")]), None)
-                ]),
+                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1645,28 +1608,28 @@ mod tests {
     fn test_block_ordered_list() {
         assert_eq!(
             ast("a) l1\n\n(B) l2\n\n  1. l2,1"),
-            Rc::from([Block::List(
-                Rc::from([
+            vec![Block::List(
+                vec![
                     ListItem(
                         Index::Ordered(Enumerator::Alpha("a")),
-                        Rc::from([Span::Text("l1")]),
+                        vec![Span::Text("l1")],
                         None
                     ),
                     ListItem(
                         Index::Ordered(Enumerator::Alpha("B")),
-                        Rc::from([Span::Text("l2")]),
+                        vec![Span::Text("l2")],
                         Some(Block::List(
-                            Rc::from([ListItem(
+                            vec![ListItem(
                                 Index::Ordered(Enumerator::Digit("1")),
-                                Rc::from([Span::Text("l2,1")]),
+                                vec![Span::Text("l2,1")],
                                 None
-                            )]),
+                            )],
                             None
                         ))
                     )
-                ]),
+                ],
                 None
-            )])
+            )]
         )
     }
 
@@ -1674,28 +1637,24 @@ mod tests {
     fn test_block_definition_list() {
         assert_eq!(
             ast(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
-            Rc::from([Block::List(
-                Rc::from([
-                    ListItem(
-                        Index::Definition("ab"),
-                        Rc::from([Span::Text("\n  alpha")]),
-                        None
-                    ),
+            vec![Block::List(
+                vec![
+                    ListItem(Index::Definition("ab"), vec![Span::Text("\n  alpha")], None),
                     ListItem(
                         Index::Definition("12"),
-                        Rc::from([Span::Text("\n  digit")]),
+                        vec![Span::Text("\n  digit")],
                         Some(Block::List(
-                            Rc::from([ListItem(
+                            vec![ListItem(
                                 Index::Definition("iv"),
-                                Rc::from([Span::Text("\n    roman")]),
+                                vec![Span::Text("\n    roman")],
                                 None
-                            )]),
+                            )],
                             None
                         ))
                     )
-                ]),
+                ],
                 None
-            )])
+            )]
         )
     }
 
@@ -1703,18 +1662,18 @@ mod tests {
     fn test_block_header_sigleline_unordered_list() {
         assert_eq!(
             ast("## [*strong heading*]\n- l1\n- l2"),
-            Rc::from([Block::Heading(
+            vec![Block::Heading(
                 HLevel::H2,
-                Rc::from([Span::Strong(Rc::from([Span::Text("strong heading")]), None)]),
-                Rc::from([Block::List(
-                    Rc::from([
-                        ListItem(Index::Unordered("-"), Rc::from([Span::Text("l1")]), None),
-                        ListItem(Index::Unordered("-"), Rc::from([Span::Text("l2")]), None)
-                    ]),
+                vec![Span::Strong(vec![Span::Text("strong heading")], None)],
+                vec![Block::List(
+                    vec![
+                        ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
+                        ListItem(Index::Unordered("-"), vec![Span::Text("l2")], None)
+                    ],
                     None
-                )]),
+                )],
                 None
-            )])
+            )]
         )
     }
 
@@ -1722,15 +1681,15 @@ mod tests {
     fn test_block_header_sigleline_span_not_list() {
         assert_eq!(
             ast("## [*strong heading\n  - l1*]\n  - l2"),
-            Rc::from([Block::Heading(
+            vec![Block::Heading(
                 HLevel::H2,
-                Rc::from([
-                    Span::Strong(Rc::from([Span::Text("strong heading\n  - l1")]), None),
+                vec![
+                    Span::Strong(vec![Span::Text("strong heading\n  - l1")], None),
                     Span::Text("\n  - l2")
-                ]),
-                Rc::from([]),
+                ],
+                vec![],
                 None
-            )])
+            )]
         )
     }
 
@@ -1738,21 +1697,17 @@ mod tests {
     fn test_block_task_list() {
         assert_eq!(
             ast(": ab\n  - [ ] alpha"),
-            Rc::from([Block::List(
-                Rc::from([ListItem(
+            vec![Block::List(
+                vec![ListItem(
                     Index::Definition("ab"),
-                    Rc::from([]),
+                    vec![],
                     Some(Block::List(
-                        Rc::from([ListItem(
-                            Index::Task(" "),
-                            Rc::from([Span::Text("alpha")]),
-                            None
-                        )]),
+                        vec![ListItem(Index::Task(" "), vec![Span::Text("alpha")], None)],
                         None
                     )),
-                )]),
+                )],
                 None
-            )])
+            )]
         )
     }
 
@@ -1761,110 +1716,107 @@ mod tests {
         let doc = ast("# h1\n\ndoc > h1\n\n## h2a\n\ndoc > h1 > h2a\n\n::: d1\n\ndoc > h1 > h2a > d1\n\n### h3a\n\ndoc > h1 > h2a > d1 > h3a\n\n#### h4a\n\ndoc > h1 > h2a > d1 > h3a > h4a\n\n#### h4b\n\ndoc > h1 > h2a > d1 > h3a > h4b\n\n:::\n\ndoc > h1 > h2a\n\n### h3b\n\ndoc > h1 > h2a > h3b\n\n::: d2\ndoc > h1 > h2a > h3b > d2\n\n#### h4b\n\ndoc > h1 > h2a > h3b > d2 > h4b\n\n## h2a\n\ndoc > h1 > h2b\n\n:::\ndoc > h1 > h2b // No change\n");
         assert_eq!(
             doc,
-            Rc::from([Block::Heading(
+            vec![Block::Heading(
                 HLevel::H1,
-                Rc::from([Span::Text("h1")]),
-                Rc::from([
-                    Block::Paragraph(Rc::from([Span::Text("doc > h1")]), None),
+                vec![Span::Text("h1")],
+                vec![
+                    Block::Paragraph(vec![Span::Text("doc > h1")], None),
                     Block::Heading(
                         HLevel::H2,
-                        Rc::from([Span::Text("h2a")]),
-                        Rc::from([
-                            Block::Paragraph(Rc::from([Span::Text("doc > h1 > h2a")]), None),
+                        vec![Span::Text("h2a")],
+                        vec![
+                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None),
                             Block::Div(
                                 "d1",
-                                Rc::from([
-                                    Block::Paragraph(
-                                        Rc::from([Span::Text("doc > h1 > h2a > d1")]),
-                                        None
-                                    ),
+                                vec![
+                                    Block::Paragraph(vec![Span::Text("doc > h1 > h2a > d1")], None),
                                     Block::Heading(
                                         HLevel::H3,
-                                        Rc::from([Span::Text("h3a")]),
-                                        Rc::from([
+                                        vec![Span::Text("h3a")],
+                                        vec![
                                             Block::Paragraph(
-                                                Rc::from([Span::Text("doc > h1 > h2a > d1 > h3a")]),
+                                                vec![Span::Text("doc > h1 > h2a > d1 > h3a")],
                                                 None
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
-                                                Rc::from([Span::Text("h4a")]),
-                                                Rc::from([Block::Paragraph(
-                                                    Rc::from([Span::Text(
+                                                vec![Span::Text("h4a")],
+                                                vec![Block::Paragraph(
+                                                    vec![Span::Text(
                                                         "doc > h1 > h2a > d1 > h3a > h4a"
-                                                    )]),
+                                                    )],
                                                     None
-                                                )]),
+                                                )],
                                                 None
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
-                                                Rc::from([Span::Text("h4b")]),
-                                                Rc::from([Block::Paragraph(
-                                                    Rc::from([Span::Text(
+                                                vec![Span::Text("h4b")],
+                                                vec![Block::Paragraph(
+                                                    vec![Span::Text(
                                                         "doc > h1 > h2a > d1 > h3a > h4b"
-                                                    )]),
+                                                    )],
                                                     None
-                                                )]),
+                                                )],
                                                 None
                                             )
-                                        ]),
+                                        ],
                                         None
                                     )
-                                ]),
+                                ],
                                 None
                             ),
-                            Block::Paragraph(Rc::from([Span::Text("doc > h1 > h2a")]), None),
+                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None),
                             Block::Heading(
                                 HLevel::H3,
-                                Rc::from([Span::Text("h3b")]),
-                                Rc::from([
+                                vec![Span::Text("h3b")],
+                                vec![
                                     Block::Paragraph(
-                                        Rc::from([Span::Text("doc > h1 > h2a > h3b")]),
+                                        vec![Span::Text("doc > h1 > h2a > h3b")],
                                         None
                                     ),
                                     Block::Div(
                                         "d2",
-                                        Rc::from([
+                                        vec![
                                             Block::Paragraph(
-                                                Rc::from([Span::Text("doc > h1 > h2a > h3b > d2")]),
+                                                vec![Span::Text("doc > h1 > h2a > h3b > d2")],
                                                 None
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
-                                                Rc::from([Span::Text("h4b")]),
-                                                Rc::from([Block::Paragraph(
-                                                    Rc::from([Span::Text(
+                                                vec![Span::Text("h4b")],
+                                                vec![Block::Paragraph(
+                                                    vec![Span::Text(
                                                         "doc > h1 > h2a > h3b > d2 > h4b"
-                                                    )]),
+                                                    )],
                                                     None
-                                                )]),
+                                                )],
                                                 None
                                             )
-                                        ]),
+                                        ],
                                         None
                                     )
-                                ]),
+                                ],
                                 None
                             )
-                        ]),
+                        ],
                         None
                     ),
                     Block::Heading(
                         HLevel::H2,
-                        Rc::from([Span::Text("h2a")]),
-                        Rc::from([
-                            Block::Paragraph(Rc::from([Span::Text("doc > h1 > h2b")]), None),
+                        vec![Span::Text("h2a")],
+                        vec![
+                            Block::Paragraph(vec![Span::Text("doc > h1 > h2b")], None),
                             Block::Paragraph(
-                                Rc::from([Span::Text(":::\ndoc > h1 > h2b // No change\n")]),
+                                vec![Span::Text(":::\ndoc > h1 > h2b // No change\n")],
                                 None
                             )
-                        ]),
+                        ],
                         None
                     )
-                ]),
+                ],
                 None
-            )])
+            )]
         );
     }
 
@@ -1873,36 +1825,36 @@ mod tests {
         let doc = ast("Left \\\n![[loc|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n");
         assert_eq!(
             doc,
-            Rc::from([Block::Paragraph(
-                Rc::from([
+            vec![Block::Paragraph(
+                vec![
                     Span::Text("Left "),
                     Span::LineBreak("\n"),
                     Span::Link(
                         "loc",
                         true,
-                        Rc::from([
+                        vec![
                             Span::Text("text-32 "),
                             Span::Verbatim("-32v", None, None),
                             Span::Text(" "),
                             Span::Strong(
-                                Rc::from([
+                                vec![
                                     Span::Text("a"),
-                                    Span::Emphasis(Rc::from([Span::Text("B"),]), None)
-                                ]),
+                                    Span::Emphasis(vec![Span::Text("B"),], None)
+                                ],
                                 None
                             )
-                        ]),
+                        ],
                         None
                     ),
                     Span::Text(" Right "),
                     Span::Hash("Level 1"),
                     Span::Text("\n")
-                ]),
+                ],
                 None
-            )])
+            )]
         );
         if let Block::Paragraph(ss, _) = &doc[0] {
-            let ts = contents(ss.clone());
+            let ts = contents(ss.to_vec());
             assert_eq!(
                 ts,
                 vec!["Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "Level 1", "\n"]
@@ -1943,7 +1895,7 @@ mod tests {
     fn test_hashtag_index_of_block_heading_link_span() {
         let doc = ast("# ![[loc|Level 0]]");
         if let Block::Heading(_, ss, _, _) = &doc[0] {
-            let ts = contents(ss.clone());
+            let ts = contents(ss.to_vec());
             let hts = hashtags(ts);
             let s = htindex(hts);
             assert_eq!(s, "level-0");
@@ -1956,7 +1908,7 @@ mod tests {
     fn test_hashtag_index_of_block_heading_negative_digit_only() {
         let doc = ast("# -33-32 31 -30");
         if let Block::Heading(_, ss, _, _) = &doc[0] {
-            let ts = contents(ss.clone());
+            let ts = contents(ss.to_vec());
             let hts = hashtags(ts);
             let s = htindex(hts);
             assert_eq!(s, "--33-32-31--30");
