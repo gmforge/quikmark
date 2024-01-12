@@ -9,10 +9,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let name = args[1].clone();
     let contents = fs::read_to_string(&name)?;
-    let doc = document(&contents);
-    match doc {
-        Ok(doc) => println!("{:?}", doc.blocks),
-        Err(e) => panic!("file: {:?}, {:?}", &name, e),
-    }
+    let doc = document(&contents)?;
+    println!("{:?}", doc.blocks);
     Ok(())
 }
