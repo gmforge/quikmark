@@ -95,7 +95,7 @@ pub enum Span<'a> {
     NBWS(&'a str),
     Esc(&'a str),
     Text(&'a str),
-    Hash(&'a str),
+    Hash(bool, &'a str),
     EOM,
     // Tags with Attributes
     Link(
@@ -130,7 +130,7 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> S
         | Span::NBWS(_)
         | Span::Esc(_)
         | Span::Text(_)
-        | Span::Hash(_)
+        | Span::Hash(_, _)
         | Span::EOM => span,
     }
 }
@@ -230,8 +230,12 @@ fn hash_field(input: &str) -> IResult<&str, &str> {
 
 // HashTag   =  { Edge ~ Hash ~ Location }
 fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
-    let (i, h) = preceded(tag("#"), hash_field)(input)?;
-    Ok((i, Span::Hash(h)))
+    let (i, (embed, h)) = tuple((opt(tag("!")), preceded(tag("#"), hash_field)))(input)?;
+    if let Some(_) = embed {
+        Ok((i, Span::Hash(true, h)))
+    } else {
+        Ok((i, Span::Hash(false, h)))
+    }
 }
 
 // brackettag  = _{
@@ -398,7 +402,7 @@ fn spans<'a, 'b>(
             // that the file input as ended.
             match s {
                 Span::EOM => break,
-                Span::Hash(_) | Span::Esc(_) => ss.push(s),
+                Span::Hash(_, _) | Span::Esc(_) => ss.push(s),
                 _ => {
                     if let Ok((input, kvs)) = attributes(i) {
                         let s = span_with_attributes(s, kvs);
@@ -575,7 +579,7 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
         .into_iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(t) => vec![t],
+                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(_, t) => vec![t],
                 Span::Link(s, _, vs, _) => {
                     if vs.len() > 0 {
                         contents(vs)
@@ -1227,9 +1231,9 @@ mod tests {
     #[test]
     fn test_block_paragraph_hash_field_eom() {
         assert_eq!(
-            ast("left #hash"),
+            ast("left !#hash"),
             vec![Block::Paragraph(
-                vec![Span::Text("left "), Span::Hash("hash")],
+                vec![Span::Text("left "), Span::Hash(true, "hash")],
                 None
             )]
         );
@@ -1242,7 +1246,7 @@ mod tests {
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
-                    Span::Hash("hash 1"),
+                    Span::Hash(false, "hash 1"),
                     Span::Text("\nnext line")
                 ],
                 None
@@ -1847,7 +1851,7 @@ mod tests {
                         None
                     ),
                     Span::Text(" Right "),
-                    Span::Hash("Level 1"),
+                    Span::Hash(false, "Level 1"),
                     Span::Text("\n")
                 ],
                 None
