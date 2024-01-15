@@ -739,10 +739,10 @@ pub enum Index<'a> {
     Definition(&'a str),
     // (e), e), e.
     Ordered(Enumerator<'a>),
-    // - [ ]
+    // - [ ], + [ ], * [ ]
     // contents may be a checkbox indicated with space or x,
     // or input field indicated with digit1 or ratio (digit1:digit1)
-    Task(&'a str),
+    Task(&'a str, &'a str),
     // -, +, *
     Unordered(&'a str),
 }
@@ -794,12 +794,11 @@ fn ratio<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
 }
 
 fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
-    let (i, t) = delimited(
-        tag("- ["),
-        alt((tag(" "), tag("x"), tag("X"), ratio, digit1)),
-        tag("]"),
-    )(input)?;
-    Ok((i, Index::Task(t)))
+    let (i, (l, t)) = tuple((
+        terminated(is_a("-+*"), tag(" [")),
+        terminated(alt((tag(" "), tag("x"), tag("X"), ratio, digit1)), tag("]")),
+    ))(input)?;
+    Ok((i, Index::Task(l, t)))
 }
 
 // Unordered  = { "-" | "+" | "*" }
@@ -1706,7 +1705,11 @@ mod tests {
                     Index::Definition("ab"),
                     vec![],
                     Some(Block::List(
-                        vec![ListItem(Index::Task(" "), vec![Span::Text("alpha")], None)],
+                        vec![ListItem(
+                            Index::Task("-", " "),
+                            vec![Span::Text("alpha")],
+                            None
+                        )],
                         None
                     )),
                 )],
