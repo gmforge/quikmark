@@ -80,6 +80,13 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
     '-' => "Delete",
 };
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum HashFilter {
+    NotEqual,
+    Equal,
+    GreaterThan,
+    LessThan,
+}
 // Strong      =  { "*" }
 // Emphasis    =  { "_" }
 // Superscript =  { "^" }
@@ -95,7 +102,7 @@ pub enum Span<'a> {
     NBWS(&'a str),
     Esc(&'a str),
     Text(&'a str),
-    Hash(bool, &'a str),
+    Hash(Option<HashFilter>, &'a str),
     EOM,
     // Tags with Attributes
     Link(
@@ -230,11 +237,17 @@ fn hash_field(input: &str) -> IResult<&str, &str> {
 
 // HashTag   =  { Edge ~ Hash ~ Location }
 fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
-    let (i, (embed, h)) = tuple((opt(tag("!")), preceded(tag("#"), hash_field)))(input)?;
-    if let Some(_) = embed {
-        Ok((i, Span::Hash(true, h)))
+    let (i, (filter, h)) = tuple((opt(is_a("!<>=")), preceded(tag("#"), hash_field)))(input)?;
+    if let Some(f) = filter {
+        match f {
+            "!" => Ok((i, Span::Hash(Some(HashFilter::NotEqual), h))),
+            "<" => Ok((i, Span::Hash(Some(HashFilter::LessThan), h))),
+            "=" => Ok((i, Span::Hash(Some(HashFilter::Equal), h))),
+            ">" => Ok((i, Span::Hash(Some(HashFilter::GreaterThan), h))),
+            _ => Ok((i, Span::Hash(None, h))),
+        }
     } else {
-        Ok((i, Span::Hash(false, h)))
+        Ok((i, Span::Hash(None, h)))
     }
 }
 
@@ -1232,7 +1245,10 @@ mod tests {
         assert_eq!(
             ast("left !#hash"),
             vec![Block::Paragraph(
-                vec![Span::Text("left "), Span::Hash(true, "hash")],
+                vec![
+                    Span::Text("left "),
+                    Span::Hash(Some(HashFilter::NotEqual), "hash")
+                ],
                 None
             )]
         );
@@ -1245,7 +1261,7 @@ mod tests {
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
-                    Span::Hash(false, "hash 1"),
+                    Span::Hash(None, "hash 1"),
                     Span::Text("\nnext line")
                 ],
                 None
@@ -1854,7 +1870,7 @@ mod tests {
                         None
                     ),
                     Span::Text(" Right "),
-                    Span::Hash(false, "Level 1"),
+                    Span::Hash(None, "Level 1"),
                     Span::Text("\n")
                 ],
                 None
