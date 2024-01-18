@@ -649,8 +649,15 @@ pub enum Block<'a> {
     Heading(
         HLevel<'a>,
         Vec<Span<'a>>,
+        // List of next level contained headings
+        // Option<HashMap<String, &'a Block<'a>>>,
         Vec<Block<'a>>,
+        // List of attributes
         Option<HashMap<&'a str, &'a str>>,
+        // List of associated hashtags
+        Option<HashMap<String, Vec<HashTag>>>,
+        // List of associated filters
+        Option<HashMap<String, (HashFilter, Vec<HashTag>)>>,
     ),
     // Code(format, [Span::Text], attributes)
     Code(Option<&'a str>, &'a str, Option<HashMap<&'a str, &'a str>>),
@@ -1019,7 +1026,7 @@ fn blocks<'a>(
             let (input, head_ss) = spans(input, None, Some(false))?;
             let (input, head_bs) = blocks(input, divs, Some(hl))?;
             i = input;
-            bs.push(Block::Heading(hl, head_ss, head_bs, attrs));
+            bs.push(Block::Heading(hl, head_ss, head_bs, attrs, None, None));
         } else {
             let (input, b) = match alt((code, list, paragraph))(i)? {
                 (i, Block::Code(f, c, _)) => (i, Block::Code(f, c, attrs)),
@@ -1043,8 +1050,8 @@ fn blocks<'a>(
 #[derive(Debug, PartialEq, Eq)]
 pub struct Document<'a> {
     pub blocks: Vec<Block<'a>>,
+    // References to a aist of headings within the document
     pub refs: Option<HashMap<&'a str, Block<'a>>>,
-    pub tags: Option<HashMap<&'a str, Vec<&'a str>>>,
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
@@ -1053,7 +1060,6 @@ pub fn document<'a>(input: &'a str) -> Result<Document<'a>, Box<dyn Error>> {
         Ok((_, bs)) => Ok(Document {
             blocks: bs,
             refs: None,
-            tags: None,
         }),
         Err(e) => panic!("error parcing input: {:?}", e),
     }
@@ -1419,6 +1425,8 @@ mod tests {
                 HLevel::H2,
                 vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                 vec![],
+                None,
+                None,
                 None
             )]
         );
@@ -1435,6 +1443,8 @@ mod tests {
                     Span::Strong(vec![Span::Text("strong")], None)
                 ],
                 vec![Block::Paragraph(vec![Span::Text("new paragraph")], None)],
+                None,
+                None,
                 None
             )]
         );
@@ -1454,6 +1464,8 @@ mod tests {
                         vec![Block::Paragraph(vec![Span::Text("  line")], None)],
                         None
                     )],
+                    None,
+                    None,
                     None
                 )],
                 None
@@ -1691,6 +1703,8 @@ mod tests {
                     ],
                     None
                 )],
+                None,
+                None,
                 None
             )]
         )
@@ -1707,6 +1721,8 @@ mod tests {
                     Span::Text("\n  - l2")
                 ],
                 vec![],
+                None,
+                None,
                 None
             )]
         )
@@ -1770,6 +1786,8 @@ mod tests {
                                                     )],
                                                     None
                                                 )],
+                                                None,
+                                                None,
                                                 None
                                             ),
                                             Block::Heading(
@@ -1781,9 +1799,13 @@ mod tests {
                                                     )],
                                                     None
                                                 )],
+                                                None,
+                                                None,
                                                 None
                                             )
                                         ],
+                                        None,
+                                        None,
                                         None
                                     )
                                 ],
@@ -1814,15 +1836,21 @@ mod tests {
                                                     )],
                                                     None
                                                 )],
+                                                None,
+                                                None,
                                                 None
                                             )
                                         ],
                                         None
                                     )
                                 ],
+                                None,
+                                None,
                                 None
                             )
                         ],
+                        None,
+                        None,
                         None
                     ),
                     Block::Heading(
@@ -1835,9 +1863,13 @@ mod tests {
                                 None
                             )
                         ],
+                        None,
+                        None,
                         None
                     )
                 ],
+                None,
+                None,
                 None
             )]
         );
@@ -1917,7 +1949,7 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_link_span() {
         let doc = ast("# ![[loc|Level 0]]");
-        if let Block::Heading(_, ss, _, _) = &doc[0] {
+        if let Block::Heading(_, ss, _, _, _, _) = &doc[0] {
             let ts = contents(ss.to_vec());
             let hts = hashtags(ts);
             let s = htindex(hts);
@@ -1930,7 +1962,7 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_negative_digit_only() {
         let doc = ast("# -33-32 31 -30");
-        if let Block::Heading(_, ss, _, _) = &doc[0] {
+        if let Block::Heading(_, ss, _, _, _, _) = &doc[0] {
             let ts = contents(ss.to_vec());
             let hts = hashtags(ts);
             let s = htindex(hts);
