@@ -36,20 +36,20 @@ use std::fmt;
 // Identifier = { "#" ~ Field }
 // Class      = { "." ~ Field }
 // Attribute  = { Format | "{" ~ " "* ~ ((Format | Identifier | Class) ~ " "*)+ ~ " "* ~ "}" }
-fn key<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+fn key(input: &str) -> IResult<&str, &str> {
     // let (input, (k, _)) = consumed(tuple((alpha1, many0(alt((alphanumeric0, is_a("_")))))))(input)?;
     is_not("= }\t\n\r")(input)
 }
-fn esc_value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+fn esc_value(input: &str) -> IResult<&str, &str> {
     let (input, (es, _)) = consumed(preceded(tag("\\"), anychar))(input)?;
     Ok((input, es))
 }
-fn key_value<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+fn key_value(input: &str) -> IResult<&str, &str> {
     // is_not(" }\t\n\r")(input)
     let (input, (v, _)) = consumed(many1(alt((esc_value, is_not(" }\t\n\r\\")))))(input)?;
     Ok((input, v))
 }
-fn attributes<'a>(input: &'a str) -> IResult<&'a str, HashMap<&'a str, &'a str>> {
+fn attributes(input: &str) -> IResult<&str, HashMap<&str, &str>> {
     let (input, kvs) = delimited(
         tuple((tag("{"), space0)),
         separated_list1(
@@ -143,9 +143,9 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> S
 }
 
 // End       =  { NEWLINE ~ NEWLINE | EOI }
-fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn eom(input: &str) -> IResult<&str, Span> {
     // Input has ended
-    if input == "" {
+    if input.is_empty() {
         return Ok((input, Span::EOM));
     }
     // Common block terminator has ended
@@ -155,14 +155,14 @@ fn eom<'a>(input: &'a str) -> IResult<&'a str, Span> {
 }
 
 // LineBreak =  { "\\" ~ &NEWLINE }
-fn esc<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn esc(input: &str) -> IResult<&str, Span> {
     let (i, e) = preceded(
         tag("\\"),
         alt((tag(" "), line_ending, take_while_m_n(1, 1, |c| c != ' '))),
     )(input)?;
     if e == " " {
         Ok((i, Span::NBWS(e)))
-    } else if let Ok(_) = line_ending::<_, ()>(e) {
+    } else if line_ending::<_, ()>(e).is_ok() {
         Ok((i, Span::LineBreak(e)))
     } else {
         Ok((i, Span::Esc(e)))
@@ -176,9 +176,9 @@ fn esc<'a>(input: &'a str) -> IResult<&'a str, Span> {
 //   | Verbatim
 // }
 // NOTE: Hash and Verbatim where handles separately.
-fn nobracket<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn nobracket(input: &str) -> IResult<&str, Span> {
     let (i, t) = alt((tag("^"), tag("~")))(input)?;
-    let (i, ss) = spans(i, Some(&t), None)?;
+    let (i, ss) = spans(i, Some(t), None);
     match t {
         "^" => Ok((i, Span::Superscript(ss, None))),
         "~" => Ok((i, Span::Subscript(ss, None))),
@@ -191,11 +191,11 @@ fn nobracket<'a>(input: &'a str) -> IResult<&'a str, Span> {
 
 // RawText   =  { (!(PEEK | NEWLINE) ~ ANY)+ }
 // Raw       =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
-fn verbatim<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn verbatim(input: &str) -> IResult<&str, Span> {
     let (input, svtag) = take_while1(|b| b == '`')(input)?;
     let mut char_total_length: usize = 0;
     let mut i = input;
-    while i.len() > 0 {
+    while !i.is_empty() {
         if let Ok((i, _evtag)) = tag::<_, &str, ()>("\n")(i) {
             let (content, _) = input.split_at(char_total_length);
             return Ok((i, Span::Verbatim(content, None, None)));
@@ -236,19 +236,15 @@ fn hash_field(input: &str) -> IResult<&str, &str> {
 }
 
 // HashTag   =  { Edge ~ Hash ~ Location }
-fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn hash(input: &str) -> IResult<&str, Span> {
     let (i, (filter, h)) = tuple((opt(is_a("!<>=")), preceded(tag("#"), hash_field)))(input)?;
-    if let Some(f) = filter {
-        match f {
-            "!" => Ok((i, Span::Hash(Some(HashOp::NotEqual), h))),
-            "<" => Ok((i, Span::Hash(Some(HashOp::LessThan), h))),
-            "=" => Ok((i, Span::Hash(Some(HashOp::Equal), h))),
-            ">" => Ok((i, Span::Hash(Some(HashOp::GreaterThan), h))),
-            _ => Ok((i, Span::Hash(None, h))),
-        }
-    } else {
-        Ok((i, Span::Hash(None, h)))
-    }
+    filter.map_or(Ok((i, Span::Hash(None, h))), |f| match f {
+        "!" => Ok((i, Span::Hash(Some(HashOp::NotEqual), h))),
+        "<" => Ok((i, Span::Hash(Some(HashOp::LessThan), h))),
+        "=" => Ok((i, Span::Hash(Some(HashOp::Equal), h))),
+        ">" => Ok((i, Span::Hash(Some(HashOp::GreaterThan), h))),
+        _ => Ok((i, Span::Hash(None, h))),
+    })
 }
 
 // brackettag  = _{
@@ -262,7 +258,7 @@ fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
 fn bracket(input: &str) -> IResult<&str, Span> {
     let (i, t) = preceded(tag("["), is_a("*_=+-^~"))(input)?;
     let closing_tag = t.to_string() + "]";
-    let (i, ss) = spans(i, Some(&closing_tag), None)?;
+    let (i, ss) = spans(i, Some(&closing_tag), None);
     match t {
         "*" => Ok((i, Span::Strong(ss, None))),
         "_" => Ok((i, Span::Emphasis(ss, None))),
@@ -306,7 +302,7 @@ fn at_boundary_end<'a>(closer: &'a str, input: &'a str) -> IResult<&'a str, &'a 
 fn edge(input: &str) -> IResult<&str, Span> {
     let (i, t) = alt((tag("*"), tag("_")))(input)?;
     let _ = not(alt((tag(" "), tag("\n"), tag("\t"), tag("\r"))))(i)?;
-    let (i, ss) = spans(i, Some(&t), None)?;
+    let (i, ss) = spans(i, Some(t), None);
     match t {
         "*" => Ok((i, Span::Strong(ss, None))),
         "_" => Ok((i, Span::Emphasis(ss, None))),
@@ -326,10 +322,10 @@ fn locator(input: &str) -> IResult<&str, &str> {
 }
 
 // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
-fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
+fn link(input: &str) -> IResult<&str, Span> {
     let (i, (e, l)) = tuple((opt(tag("!")), preceded(tag("[["), locator)))(input)?;
-    let embed = if let Some(_) = e { true } else { false };
-    let (i, ss) = spans(i, Some("]]"), None)?;
+    let embed = e.is_some();
+    let (i, ss) = spans(i, Some("]]"), None);
     Ok((i, Span::Link(l, embed, ss, None)))
 }
 
@@ -349,11 +345,11 @@ fn link<'a>(input: &'a str) -> IResult<&'a str, Span> {
 //   from (input: &str, closer: Option<&str>)
 //     to (input: &str, closer: &str)
 //   where starting closer as "" happens to also be the same as eof/eom
-fn spans<'a, 'b>(
+fn spans<'a>(
     input: &'a str,
-    closer: Option<&'b str>,
+    closer: Option<&str>,
     inlist: Option<bool>,
-) -> IResult<&'a str, Vec<Span<'a>>> {
+) -> (&'a str, Vec<Span<'a>>) {
     let mut ss = Vec::new();
     let mut i = input;
     // Loop through text until reach two newlines
@@ -362,7 +358,7 @@ fn spans<'a, 'b>(
     let mut text_start = input;
     let mut char_total_length: usize = 0;
     let mut trim_closer = false;
-    while i != "" {
+    while !i.is_empty() {
         // println!(
         //     "input: {:?}\n  boundary: {:?}\n  closer: {:?}\n  text_start: {:?}",
         //     i, boundary, closer, text_start
@@ -370,8 +366,8 @@ fn spans<'a, 'b>(
         // if we just started or next char is boundary
         if let Some(closer) = closer {
             if i.starts_with(closer) {
-                if boundary == false && (closer == "*" || closer == "_") {
-                    if let Ok(_) = at_boundary_end(closer, i) {
+                if !boundary && (closer == "*" || closer == "_") {
+                    if at_boundary_end(closer, i).is_ok() {
                         trim_closer = true;
                         break;
                     }
@@ -437,11 +433,7 @@ fn spans<'a, 'b>(
             }
         } else {
             let c = i.chars().next().unwrap();
-            boundary = if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
-                true
-            } else {
-                false
-            };
+            boundary = c == ' ' || c == '\n' || c == '\t' || c == '\r';
             let char_length = c.len_utf8();
             (_, i) = i.split_at(char_length);
             char_total_length += char_length;
@@ -457,7 +449,7 @@ fn spans<'a, 'b>(
             (_, text_start) = text_start.split_at(closer.len());
         }
     }
-    Ok((text_start, ss))
+    (text_start, ss)
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
@@ -484,9 +476,9 @@ pub enum HashTag {
 impl fmt::Display for HashTag {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            HashTag::Space => write!(f, "-"),
-            HashTag::Str(s) => write!(f, "{}", &s),
-            HashTag::Num(n) => write!(f, "{}", n.to_string()),
+            Self::Space => write!(f, "-"),
+            Self::Str(s) => write!(f, "{}", &s),
+            Self::Num(n) => write!(f, "{n}"),
         }
     }
 }
@@ -505,12 +497,12 @@ pub fn htindex(hts: Vec<HashTag>) -> String {
 
 // Tags turns contents into hash tags type that may be used for ordering
 // anchor strings for referencing/indexing, or filtering.
-pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
+pub fn hashtags(contents: Vec<&str>) -> Vec<HashTag> {
     let (mut hts, ht) = contents
         .iter()
         .fold((Vec::new(), None), |(mut hts, mut ht), c| {
             let mut i = *c;
-            while i != "" {
+            while !i.is_empty() {
                 if let Ok((c, (cd, (n, d)))) =
                     consumed(tuple((opt(tag::<&str, &str, ()>("-")), digit1)))(i)
                 {
@@ -519,7 +511,7 @@ pub fn hashtags<'a>(contents: Vec<&'a str>) -> Vec<HashTag> {
                     } else {
                         (cd, false)
                     };
-                    if let Ok(d) = isize::from_str_radix(d, 10) {
+                    if let Ok(d) = d.parse::<isize>() {
                         if let Some(oht) = ht {
                             if let HashTag::Str(s) = oht {
                                 hts.push(HashTag::Str(s.to_lowercase()));
@@ -594,10 +586,10 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
             let rs = match result {
                 Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(_, t) => vec![t],
                 Span::Link(s, _, vs, _) => {
-                    if vs.len() > 0 {
-                        contents(vs)
-                    } else {
+                    if vs.is_empty() {
                         vec![s]
+                    } else {
+                        contents(vs)
                     }
                 }
                 Span::Strong(vs, _)
@@ -700,16 +692,16 @@ pub enum HLevel<'a> {
     H6,
 }
 
-fn div_start<'a>(input: &'a str) -> IResult<&'a str, HLevel> {
+fn div_start(input: &str) -> IResult<&str, HLevel> {
     let (input, name) = preceded(tuple((tag(":::"), space1)), field)(input)?;
     Ok((input, HLevel::DIV(name)))
 }
 
-fn div_close<'a>(input: &'a str) -> IResult<&'a str, bool> {
+fn div_close(input: &str) -> IResult<&str, bool> {
     value(true, tuple((tag(":::"), alt((line_ending, eof)))))(input)
 }
 
-fn head_start<'a>(input: &'a str) -> IResult<&'a str, HLevel> {
+fn head_start(input: &str) -> IResult<&str, HLevel> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
     let level = *HLEVEL.get(htag).unwrap();
     Ok((i, level))
@@ -726,14 +718,14 @@ fn head_start<'a>(input: &'a str) -> IResult<&'a str, HLevel> {
 // CodeText  = { NEWLINE ~ (!NEWLINE ~ ANY)* }
 // CodeStop  = { NEWLINE ~ POP }
 // Code      = { CodeStart ~ (!CodeStop ~ CodeText)* ~ (CodeStop | &(NEWLINE | EOI)) }
-fn code<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
+fn code(input: &str) -> IResult<&str, Block<'_>> {
     let (input, sctag) = terminated(take_while_m_n(3, 16, |c| c == '`'), not(tag("`")))(input)?;
     let (input, format) = opt(preceded(tag("="), key))(input)?;
     // let (input, format) = opt(field)(input)?;
     let (input, _) = opt(alt((line_ending, eof)))(input)?;
     let mut i = input;
     let mut char_total_length: usize = 0;
-    while i.len() > 0 {
+    while !i.is_empty() {
         if let Ok((i, _)) = tuple((
             line_ending,
             tag::<_, &str, ()>(sctag),
@@ -784,25 +776,25 @@ pub struct ListItem<'a>(
 );
 
 // Definition = { ": " ~ Field }
-fn definition<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+fn definition(input: &str) -> IResult<&str, Index<'_>> {
     let (i, d) = preceded(tuple((tag(":"), space1)), not_line_ending)(input)?;
     Ok((i, Index::Definition(d)))
 }
 
 // Definition = { ": " ~ Field }
-fn definition_simple<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+fn definition_simple(input: &str) -> IResult<&str, Index<'_>> {
     let (i, _d) = tag(":")(input)?;
     Ok((i, Index::Definition("")))
 }
 
 // Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
-fn ordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
-    let (i, (stag, o, etag)) = tuple((
+fn ordered(input: &str) -> IResult<&str, Index<'_>> {
+    let (i, (start_tag, o, end_tag)) = tuple((
         opt(tag("(")),
         alt((alpha1, digit1)),
         alt((tag(")"), tag("."))),
     ))(input)?;
-    if stag == Some("(") && etag != ")" {
+    if start_tag == Some("(") && end_tag != ")" {
         return Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
@@ -815,12 +807,12 @@ fn ordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
     }
 }
 
-fn ratio<'a>(input: &'a str) -> IResult<&'a str, &'a str> {
+fn ratio(input: &str) -> IResult<&str, &str> {
     let (i, (r, _)) = consumed(separated_pair(digit1, char(':'), digit1))(input)?;
     Ok((i, r))
 }
 
-fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+fn task(input: &str) -> IResult<&str, Index<'_>> {
     let (i, (l, t)) = tuple((
         terminated(is_a("-+*"), tag(" [")),
         terminated(alt((tag(" "), tag("x"), tag("X"), ratio, digit1)), tag("]")),
@@ -829,12 +821,12 @@ fn task<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
 }
 
 // Unordered  = { "-" | "+" | "*" }
-fn unordered<'a>(input: &'a str) -> IResult<&'a str, Index<'a>> {
+fn unordered(input: &str) -> IResult<&str, Index<'_>> {
     let (i, u) = alt((tag("*"), tag("-"), tag("+")))(input)?;
     Ok((i, Index::Unordered(u)))
 }
 
-fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>> {
+fn list_tag(input: &str) -> IResult<&str, Option<(&str, Index<'_>)>> {
     if let (input, Some((_, d, (idx, _)))) = opt(tuple((
         many0(line_ending),
         space0,
@@ -852,7 +844,7 @@ fn list_tag<'a>(input: &'a str) -> IResult<&'a str, Option<(&'a str, Index<'a>)>
     }
 }
 
-fn is_list_singleline_tag<'a>(new: bool, input: &'a str) -> IResult<&'a str, bool> {
+fn is_list_singleline_tag(new: bool, input: &str) -> IResult<&str, bool> {
     if let (input, Some((_, _, _idx, _))) = opt(tuple((
         line_ending,
         cond(new, space0),
@@ -861,12 +853,11 @@ fn is_list_singleline_tag<'a>(new: bool, input: &'a str) -> IResult<&'a str, boo
     )))(input)?
     {
         Ok((input, true))
+    } else if let (input, Some(_)) = opt(tuple((line_ending, cond(new, space0), tag("{"))))(input)?
+    {
+        Ok((input, true))
     } else {
-        if let (input, Some(_)) = opt(tuple((line_ending, cond(new, space0), tag("{"))))(input)? {
-            Ok((input, true))
-        } else {
-            Ok((input, false))
-        }
+        Ok((input, false))
     }
 }
 
@@ -920,12 +911,10 @@ fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Opt
             } else {
                 Ok((input, None))
             }
+        } else if d.len() <= depth.len() {
+            Ok((input, None))
         } else {
-            if d.len() <= depth.len() {
-                Ok((input, None))
-            } else {
-                list_block(i, d, index, None)
-            }
+            list_block(i, d, index, None)
         }
     } else {
         Ok((input, None))
@@ -940,7 +929,7 @@ fn list_item<'a>(
 ) -> IResult<&'a str, ListItem<'a>> {
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
-    let (input, ss) = spans(input, None, Some(true))?;
+    let (input, ss) = spans(input, None, Some(true));
     let (input, slb) = nested_list_block(input, depth)?;
     Ok((input, ListItem(index, ss, slb)))
 }
@@ -948,9 +937,9 @@ fn list_item<'a>(
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
 //                ~ (Unordered | Ordered | Definition)
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
-fn list<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
+fn list(input: &str) -> IResult<&str, Block<'_>> {
     if let (i, Some((d, index))) = list_tag(input)? {
-        if d == "" {
+        if d.is_empty() {
             if let (i, Some(lb)) = list_block(i, d, index, None)? {
                 return Ok((i, lb));
             }
@@ -984,8 +973,9 @@ pub enum Align {
 }
 
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
-fn paragraph<'a>(input: &'a str) -> IResult<&'a str, Block<'a>> {
-    let (i, ss) = spans(input, None, None)?;
+#[allow(clippy::unnecessary_wraps)]
+fn paragraph(input: &str) -> IResult<&str, Block<'_>> {
+    let (i, ss) = spans(input, None, None);
     Ok((i, Block::Paragraph(ss, None)))
 }
 
@@ -1007,7 +997,7 @@ fn blocks<'a>(
     let mut i = input;
     loop {
         (i, _) = many0(line_ending)(i)?;
-        if i == "" {
+        if i.is_empty() {
             break;
         }
         if divs {
@@ -1030,10 +1020,17 @@ fn blocks<'a>(
                     return Ok((i, bs));
                 }
             }
-            let (input, head_ss) = spans(input, None, Some(false))?;
-            let (input, head_bs) = blocks(input, divs, Some(hl))?;
+            let (input, head_spans) = spans(input, None, Some(false));
+            let (input, head_blocks) = blocks(input, divs, Some(hl))?;
             i = input;
-            bs.push(Block::Heading(hl, head_ss, head_bs, attrs, None, None));
+            bs.push(Block::Heading(
+                hl,
+                head_spans,
+                head_blocks,
+                attrs,
+                None,
+                None,
+            ));
         } else {
             let (input, b) = match alt((code, list, paragraph))(i)? {
                 (i, Block::Code(f, c, _)) => (i, Block::Code(f, c, attrs)),
@@ -1050,7 +1047,7 @@ fn blocks<'a>(
             bs.push(b);
         }
     }
-    return Ok((i, bs));
+    Ok((i, bs))
 }
 
 // TODO: change tag's vector of strings to Hash types
@@ -1062,19 +1059,26 @@ pub struct Document<'a> {
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
-pub fn document<'a>(input: &'a str) -> Result<Document<'a>, Box<dyn Error>> {
+pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     match blocks(input, false, None) {
         Ok((_, bs)) => Ok(Document {
             blocks: bs,
             refs: None,
         }),
-        Err(e) => panic!("error parcing input: {:?}", e),
+        Err(e) => Err(Box::from(format!("Unable to parse input: {e:?}"))),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::*;
+
+    #[fixture]
+    fn setup() {
+        #[allow(clippy::unwrap_used)]
+        color_eyre::install().unwrap();
+    }
 
     fn ast(input: &str) -> Vec<Block> {
         let doc = document(input).unwrap();
