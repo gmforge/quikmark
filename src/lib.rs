@@ -81,7 +81,7 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
 };
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum HashFilter {
+pub enum HashOp {
     NotEqual,
     Equal,
     GreaterThan,
@@ -102,7 +102,7 @@ pub enum Span<'a> {
     NBWS(&'a str),
     Esc(&'a str),
     Text(&'a str),
-    Hash(Option<HashFilter>, &'a str),
+    Hash(Option<HashOp>, &'a str),
     EOM,
     // Tags with Attributes
     Link(
@@ -240,10 +240,10 @@ fn hash<'a>(input: &'a str) -> IResult<&'a str, Span> {
     let (i, (filter, h)) = tuple((opt(is_a("!<>=")), preceded(tag("#"), hash_field)))(input)?;
     if let Some(f) = filter {
         match f {
-            "!" => Ok((i, Span::Hash(Some(HashFilter::NotEqual), h))),
-            "<" => Ok((i, Span::Hash(Some(HashFilter::LessThan), h))),
-            "=" => Ok((i, Span::Hash(Some(HashFilter::Equal), h))),
-            ">" => Ok((i, Span::Hash(Some(HashFilter::GreaterThan), h))),
+            "!" => Ok((i, Span::Hash(Some(HashOp::NotEqual), h))),
+            "<" => Ok((i, Span::Hash(Some(HashOp::LessThan), h))),
+            "=" => Ok((i, Span::Hash(Some(HashOp::Equal), h))),
+            ">" => Ok((i, Span::Hash(Some(HashOp::GreaterThan), h))),
             _ => Ok((i, Span::Hash(None, h))),
         }
     } else {
@@ -631,6 +631,12 @@ pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
 
 // BLOCKS
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum HashFilter {
+    Op(HashOp, Vec<HashTag>),
+    Or(Box<HashFilter>, Box<HashFilter>),
+    And(Box<HashFilter>, Box<HashFilter>),
+}
 // Block = {
 //     Div
 //   | Quote
@@ -645,11 +651,12 @@ pub enum Block<'a> {
     // Div(name, [Block], attributes)
     Div(&'a str, Vec<Block<'a>>, Option<HashMap<&'a str, &'a str>>),
     //Quote(Vec<Block<'a>>),
-    // Heading(level, [Span], [Block], attributes)
+    // Heading(level, [Span], [Block], {attributes}, {hashtags}, {filters/dynamic-list})
     Heading(
         HLevel<'a>,
         Vec<Span<'a>>,
-        // List of next level contained headings
+        // List of next level contained headings and other blocks
+        //   Similar to Adjacency List Concept
         // Option<HashMap<String, &'a Block<'a>>>,
         Vec<Block<'a>>,
         // List of attributes
@@ -657,7 +664,7 @@ pub enum Block<'a> {
         // List of associated hashtags
         Option<HashMap<String, Vec<HashTag>>>,
         // List of associated filters
-        Option<HashMap<String, (HashFilter, Vec<HashTag>)>>,
+        Option<HashFilter>,
     ),
     // Code(format, [Span::Text], attributes)
     Code(Option<&'a str>, &'a str, Option<HashMap<&'a str, &'a str>>),
@@ -1253,7 +1260,7 @@ mod tests {
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
-                    Span::Hash(Some(HashFilter::NotEqual), "hash")
+                    Span::Hash(Some(HashOp::NotEqual), "hash")
                 ],
                 None
             )]
