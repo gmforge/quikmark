@@ -733,8 +733,11 @@ fn div_close(input: &str) -> IResult<&str, bool> {
 
 fn head_start(input: &str) -> IResult<&str, HLevel> {
     let (i, htag) = terminated(take_while_m_n(1, 6, |c| c == '#'), space1)(input)?;
-    let level = *HLEVEL.get(htag).unwrap();
-    Ok((i, level))
+    if let Some(level) = HLEVEL.get(htag) {
+        Ok((i, *level))
+    } else {
+        Ok((i, HLevel::H6))
+    }
 }
 
 // Heading = { (NEWLINE+ | SOI) ~ (H6 | H5 | H4 | H3 | H2 | H1) ~ (" " | "\t")+ ~ Location ~ ((LinkDlmr ~ Span+)? ~ &(NEWLINE | EOI)) }
@@ -821,9 +824,9 @@ fn definition_simple(input: &str) -> IResult<&str, Index<'_>> {
 
 // Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
 fn ordered(input: &str) -> IResult<&str, Index<'_>> {
-    let (i, (start_tag, o, end_tag)) = tuple((
+    let (i, (start_tag, (o, numerical), end_tag)) = tuple((
         opt(tag("(")),
-        alt((alpha1, digit1)),
+        consumed(alt((value(false, alpha1), value(true, digit1)))),
         alt((tag(")"), tag("."))),
     ))(input)?;
     if start_tag == Some("(") && end_tag != ")" {
@@ -832,7 +835,7 @@ fn ordered(input: &str) -> IResult<&str, Index<'_>> {
             nom::error::ErrorKind::Alt,
         )));
     }
-    if is_digit(o.bytes().next().unwrap()) {
+    if numerical {
         Ok((i, Index::Ordered(Enumerator::Digit(o))))
     } else {
         Ok((i, Index::Ordered(Enumerator::Alpha(o))))
