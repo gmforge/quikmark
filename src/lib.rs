@@ -483,7 +483,33 @@ impl fmt::Display for HashTag {
     }
 }
 
-pub fn htindex(hts: Vec<HashTag>) -> String {
+// Hashtag Indexes are used to index the hashtag minus any formatting tags
+// nor numerical values, so that ranges of hashtags may be compared.
+pub fn htindex(hts: &Vec<HashTag>) -> String {
+    let mut ss = String::new();
+    let mut space = false;
+    for ht in hts {
+        match ht {
+            HashTag::Space => space = true,
+            HashTag::Str(a) => {
+                if space {
+                    ss += "-";
+                    space = false;
+                }
+                ss += &a.to_lowercase();
+            }
+            HashTag::Num(_) => (),
+        }
+    }
+    // For empty lables that only contain numerical values
+    if ss.is_empty() {
+        return "-".to_string();
+    }
+    ss
+}
+
+// Hashtag label are used to compare content minus any formatting tags
+pub fn htlabel(hts: &Vec<HashTag>) -> String {
     let mut s = String::new();
     for ht in hts {
         match ht {
@@ -1947,8 +1973,10 @@ mod tests {
                     HashTag::Num(1)
                 ]
             );
-            let s = htindex(hts);
-            assert_eq!(s, "left-text-32--32v-ab-right-level-1")
+            let s = htlabel(&hts);
+            assert_eq!(s, "left-text-32--32v-ab-right-level-1");
+            let s = htindex(&hts);
+            assert_eq!(s, "left-text-v-ab-right-level");
         } else {
             panic!(
                 "Not able to get span from paragragh within vector {:?}",
@@ -1963,8 +1991,10 @@ mod tests {
         if let Block::Heading(_, ss, _, _, _, _) = &doc[0] {
             let ts = contents(ss.to_vec());
             let hts = hashtags(ts);
-            let s = htindex(hts);
+            let s = htlabel(&hts);
             assert_eq!(s, "level-0");
+            let s = htindex(&hts);
+            assert_eq!(s, "level");
         } else {
             panic!("Not able to get span from heading {:?}", doc);
         }
@@ -1976,8 +2006,10 @@ mod tests {
         if let Block::Heading(_, ss, _, _, _, _) = &doc[0] {
             let ts = contents(ss.to_vec());
             let hts = hashtags(ts);
-            let s = htindex(hts);
+            let s = htlabel(&hts);
             assert_eq!(s, "--33-32-31--30");
+            let s = htindex(&hts);
+            assert_eq!(s, "-");
         } else {
             panic!("Not able to get span from heading {:?}", doc);
         }
