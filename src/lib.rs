@@ -212,8 +212,8 @@ fn verbatim(input: &str) -> IResult<&str, Span> {
             }
             i = ti;
             char_total_length += evtag.len();
-        } else {
-            let char_length = i.chars().next().unwrap().len_utf8();
+        } else if let Some(c) = i.chars().next() {
+            let char_length = c.len_utf8();
             (_, i) = i.split_at(char_length);
             char_total_length += char_length;
         }
@@ -411,8 +411,13 @@ fn spans<'a>(
             // that the file input as ended.
             match s {
                 Span::EOM => break,
+                // TODO: if hash and there is an associated parent heading,
+                // then setup filters and hashtags
                 Span::Hash(_, _) | Span::Esc(_) => ss.push(s),
                 _ => {
+                    // TODO: if embedded link and span content of heading,
+                    // then setup overlay for merging/overriding of destination sibling heading.
+                    // if wrapped by heading then setup overlay for insertion.
                     if let Ok((input, kvs)) = attributes(i) {
                         let s = span_with_attributes(s, kvs);
                         ss.push(s);
@@ -431,8 +436,7 @@ fn spans<'a>(
                     }
                 }
             }
-        } else {
-            let c = i.chars().next().unwrap();
+        } else if let Some(c) = i.chars().next() {
             boundary = c == ' ' || c == '\n' || c == '\t' || c == '\r';
             let char_length = c.len_utf8();
             (_, i) = i.split_at(char_length);
@@ -761,9 +765,11 @@ fn code(input: &str) -> IResult<&str, Block<'_>> {
             let (content, _) = input.split_at(char_total_length);
             return Ok((i, Block::Code(format, content, None)));
         }
-        let char_length = i.chars().next().unwrap().len_utf8();
-        (_, i) = i.split_at(char_length);
-        char_total_length += char_length;
+        if let Some(c) = i.chars().next() {
+            let char_length = c.len_utf8();
+            (_, i) = i.split_at(char_length);
+            char_total_length += char_length;
+        }
     }
     let (content, _) = input.split_at(char_total_length);
     Ok((i, Block::Code(format, content, None)))
