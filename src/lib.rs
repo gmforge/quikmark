@@ -223,26 +223,26 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>) -> Vec<&'a str> {
 // Hashtag Indexes are used to index the hashtag minus any formatting tags
 // nor numerical values, so that ranges of hashtags may be compared.
 pub fn htindex(hts: &Vec<HashTag>) -> String {
-    let mut ss = String::new();
+    let mut s = String::new();
     let mut space = false;
     for ht in hts {
         match ht {
             HashTag::Space => space = true,
             HashTag::Str(a) => {
                 if space {
-                    ss += "-";
+                    s += "-";
                     space = false;
                 }
-                ss += &a.to_lowercase();
+                s += &a.to_lowercase();
             }
             HashTag::Num(_) => (),
         }
     }
     // For empty lables that only contain numerical values
-    if ss.is_empty() {
+    if s.is_empty() {
         return "-".to_string();
     }
-    ss
+    s
 }
 
 // Hashtag label are used to compare content minus any formatting tags
@@ -254,6 +254,9 @@ pub fn htlabel(hts: &Vec<HashTag>) -> String {
             HashTag::Str(a) => s += &a.to_lowercase(),
             HashTag::Num(n) => s += &n.to_string(),
         }
+    }
+    if s.is_empty() {
+        return "-".to_string();
     }
     s
 }
@@ -536,12 +539,12 @@ impl SpanRefs {
         let embed = e.is_some();
         let (i, ss) = self.spans(i, Some("]]"), None);
         if embed {
-            let index = htindex(&hashtags(contents(&ss)));
+            let label = htlabel(&hashtags(contents(&ss)));
             let link = l.to_string();
             if let Some(es) = &mut self.embeds {
-                es.push((index, link));
+                es.push((label, link));
             } else {
-                self.embeds = Some(vec![(index, link)])
+                self.embeds = Some(vec![(label, link)])
             }
         }
         Ok((i, Span::Link(l, embed, ss, None)))
@@ -2408,7 +2411,7 @@ mod tests {
                         ]
                     )])),
                     filters: None,
-                    embeds: Some(vec![("text-v-ab".to_string(), "loC".to_string())])
+                    embeds: Some(vec![("text-32--32v-ab".to_string(), "loC".to_string())])
                 }
             )]
         );
@@ -2467,7 +2470,7 @@ mod tests {
                 SpanRefs {
                     tags: None,
                     filters: None,
-                    embeds: Some(vec![("level".to_string(), "loc".to_string())])
+                    embeds: Some(vec![("level-0".to_string(), "loc".to_string())])
                 }
             );
         } else {
@@ -2478,13 +2481,21 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_negative_digit_only() {
         let doc = ast("# -33-32 31 -30");
-        if let Block::Heading(_, ss, _, _, _) = &doc[0] {
+        if let Block::Heading(_, ss, _, _, srs) = &doc[0] {
             let ts = contents(&ss.to_vec());
             let hts = hashtags(ts);
             let s = htlabel(&hts);
             assert_eq!(s, "--33-32-31--30");
             let s = htindex(&hts);
             assert_eq!(s, "-");
+            assert_eq!(
+                *srs,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                }
+            );
         } else {
             panic!("Not able to get span from heading {:?}", doc);
         }
