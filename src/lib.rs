@@ -3,7 +3,6 @@ use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
     alpha1, anychar, char, digit1, line_ending, multispace1, not_line_ending, space0, space1,
 };
-use nom::character::is_digit;
 use nom::combinator::{cond, consumed, eof, not, opt, peek, value};
 use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
@@ -12,6 +11,11 @@ use phf::phf_map;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
+
+// TODO: create composible block type/struct that can be used by heading, list block,
+// and div so they can utilizen hash tags and filters produced by spans. Note
+// list will group hash filters in different structural orders.
+// Headings will have a embedded link feature and indexing on top of hash structures.
 
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
@@ -80,7 +84,7 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
     '-' => "Delete",
 };
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum HashOp {
     NotEqual,
     Equal,
@@ -142,319 +146,19 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> S
     }
 }
 
-// End       =  { NEWLINE ~ NEWLINE | EOI }
-fn eom(input: &str) -> IResult<&str, Span> {
-    // Input has ended
-    if input.is_empty() {
-        return Ok((input, Span::EOM));
-    }
-    // Common block terminator has ended
-    // TODO: Account for whitespace and list indentations
-    let (_i, _s) = tuple((line_ending, line_ending))(input)?;
-    Ok((input, Span::EOM))
+#[derive(Debug, PartialEq, Eq)]
+pub struct HashFilter {
+    index: String,
+    op: HashOp,
+    tags: Vec<HashTag>,
 }
 
-// LineBreak =  { "\\" ~ &NEWLINE }
-fn esc(input: &str) -> IResult<&str, Span> {
-    let (i, e) = preceded(
-        tag("\\"),
-        alt((tag(" "), line_ending, take_while_m_n(1, 1, |c| c != ' '))),
-    )(input)?;
-    if e == " " {
-        Ok((i, Span::NBWS(e)))
-    } else if line_ending::<_, ()>(e).is_ok() {
-        Ok((i, Span::LineBreak(e)))
-    } else {
-        Ok((i, Span::Esc(e)))
-    }
-}
-
-// UnboundTag  = _{
-//     Superscript
-//   | Subscript
-//   | Hash
-//   | Verbatim
-// }
-// NOTE: Hash and Verbatim where handles separately.
-fn nobracket(input: &str) -> IResult<&str, Span> {
-    let (i, t) = alt((tag("^"), tag("~")))(input)?;
-    let (i, ss) = spans(i, Some(t), None);
-    match t {
-        "^" => Ok((i, Span::Superscript(ss, None))),
-        "~" => Ok((i, Span::Subscript(ss, None))),
-        _ => Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Alt,
-        ))),
-    }
-}
-
-// RawText   =  { (!(PEEK | NEWLINE) ~ ANY)+ }
-// Raw       =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
-fn verbatim(input: &str) -> IResult<&str, Span> {
-    let (input, svtag) = take_while1(|b| b == '`')(input)?;
-    let mut char_total_length: usize = 0;
-    let mut i = input;
-    while !i.is_empty() {
-        if let Ok((i, _evtag)) = tag::<_, &str, ()>("\n")(i) {
-            let (content, _) = input.split_at(char_total_length);
-            return Ok((i, Span::Verbatim(content, None, None)));
-        } else if let Ok((ti, evtag)) = take_while1::<_, &str, ()>(|b| b == '`')(i) {
-            if svtag == evtag {
-                let (content, _) = input.split_at(char_total_length);
-                // NOTE: May want to strip whitespace around enclosing backticks:
-                //  `` `verbatim` `` -> <code>`verbatim`</code>
-                let content_trimmed = content.trim();
-                if content_trimmed.starts_with('`') && content_trimmed.ends_with('`') {
-                    return Ok((ti, Span::Verbatim(content_trimmed, None, None)));
-                }
-                return Ok((ti, Span::Verbatim(content, None, None)));
-            }
-            i = ti;
-            char_total_length += evtag.len();
-        } else if let Some(c) = i.chars().next() {
-            let char_length = c.len_utf8();
-            (_, i) = i.split_at(char_length);
-            char_total_length += char_length;
-        }
-    }
-    let (content, _) = input.split_at(char_total_length);
-    Ok((i, Span::Verbatim(content, None, None)))
-}
-
-//{=format #identifier .class key=value key="value" %comment%}
-// Field      = { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
-fn field(input: &str) -> IResult<&str, &str> {
-    is_not(" \t\r\n]")(input)
-}
-fn hash_field(input: &str) -> IResult<&str, &str> {
-    let (input, (v, _)) = consumed(tuple((is_not(" \t\n\r]#"), opt(is_not("\t\r\n]#")))))(input)?;
-    // NOTE: We may want to add any trailing spaces that where trimmed  back to input
-    // as that could end up joining  words together that where seperated by closing tags.
-    let v = v.trim();
-    Ok((input, v))
-}
-
-// HashTag   =  { Edge ~ Hash ~ Location }
-fn hash(input: &str) -> IResult<&str, Span> {
-    let (i, (filter, h)) = tuple((opt(is_a("!<>=")), preceded(tag("#"), hash_field)))(input)?;
-    filter.map_or(Ok((i, Span::Hash(None, h))), |f| match f {
-        "!" => Ok((i, Span::Hash(Some(HashOp::NotEqual), h))),
-        "<" => Ok((i, Span::Hash(Some(HashOp::LessThan), h))),
-        "=" => Ok((i, Span::Hash(Some(HashOp::Equal), h))),
-        ">" => Ok((i, Span::Hash(Some(HashOp::GreaterThan), h))),
-        _ => Ok((i, Span::Hash(None, h))),
-    })
-}
-
-// brackettag  = _{
-//     edgetag    // strong(*), emphasis(_)
-//   | highlight  // (=)
-//   | insert     // (+)
-//   | delete     // (-)
-// }
-// NOTE: Added for consistency the Superscript and Subscript
-//   Span types to bracket tags for consistency and versatility.
-fn bracket(input: &str) -> IResult<&str, Span> {
-    let (i, t) = preceded(tag("["), is_a("*_=+-^~"))(input)?;
-    let closing_tag = t.to_string() + "]";
-    let (i, ss) = spans(i, Some(&closing_tag), None);
-    match t {
-        "*" => Ok((i, Span::Strong(ss, None))),
-        "_" => Ok((i, Span::Emphasis(ss, None))),
-        "=" => Ok((i, Span::Highlight(ss, None))),
-        "+" => Ok((i, Span::Insert(ss, None))),
-        "-" => Ok((i, Span::Delete(ss, None))),
-        "^" => Ok((i, Span::Superscript(ss, None))),
-        "~" => Ok((i, Span::Subscript(ss, None))),
-        _ => Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Alt,
-        ))),
-    }
-}
-
-// Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
-// edgetag     = _{
-//     strong
-//   | emphasis
-// }
-fn at_boundary_end<'a>(closer: &'a str, input: &'a str) -> IResult<&'a str, &'a str> {
-    terminated(
-        tag(closer),
-        alt((
-            tag(" "),
-            tag("\t"),
-            tag("\n"),
-            tag("\r"),
-            tag("*"),
-            tag("_"),
-            tag("=]"),
-            tag("+]"),
-            tag("-]"),
-            tag("^"),
-            tag("~"),
-            tag("]]"),
-            tag("{"),
-        )),
-    )(input)
-}
-fn edge(input: &str) -> IResult<&str, Span> {
-    let (i, t) = alt((tag("*"), tag("_")))(input)?;
-    let _ = not(alt((tag(" "), tag("\n"), tag("\t"), tag("\r"))))(i)?;
-    let (i, ss) = spans(i, Some(t), None);
-    match t {
-        "*" => Ok((i, Span::Strong(ss, None))),
-        "_" => Ok((i, Span::Emphasis(ss, None))),
-        _ => Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Alt,
-        ))),
-    }
-}
-
-// LinkDlmr  = _{ "|" | &("]" | NEWLINE | EOI) }
-// Locator   =  { (("\\" | !LinkDlmr) ~ ANY)+ }
-fn locator(input: &str) -> IResult<&str, &str> {
-    let (i, l) = is_not("|]")(input)?;
-    let (i, _) = opt(tag("|"))(i)?;
-    Ok((i, l))
-}
-
-// Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
-fn link(input: &str) -> IResult<&str, Span> {
-    let (i, (e, l)) = tuple((opt(tag("!")), preceded(tag("[["), locator)))(input)?;
-    let embed = e.is_some();
-    let (i, ss) = spans(i, Some("]]"), None);
-    Ok((i, Span::Link(l, embed, ss, None)))
-}
-
-// Char      =  { !NEWLINE ~ "\\"? ~ ANY }
-// Span      =  {
-//     Break
-//   | Raw
-//   | HashTag
-//   | Link
-//   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
-//   | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
-//   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
-//   | Char
-//   | NEWLINE ~ !NEWLINE
-// }
-// TODO: Look at turn spans function signature
-//   from (input: &str, closer: Option<&str>)
-//     to (input: &str, closer: &str)
-//   where starting closer as "" happens to also be the same as eof/eom
-fn spans<'a>(
-    input: &'a str,
-    closer: Option<&str>,
-    inlist: Option<bool>,
-) -> (&'a str, Vec<Span<'a>>) {
-    let mut ss = Vec::new();
-    let mut i = input;
-    // Loop through text until reach two newlines
-    // or in future matching valid list item.
-    let mut boundary = true;
-    let mut text_start = input;
-    let mut char_total_length: usize = 0;
-    let mut trim_closer = false;
-    while !i.is_empty() {
-        // println!(
-        //     "input: {:?}\n  boundary: {:?}\n  closer: {:?}\n  text_start: {:?}",
-        //     i, boundary, closer, text_start
-        // );
-        // if we just started or next char is boundary
-        if let Some(closer) = closer {
-            if i.starts_with(closer) {
-                if !boundary && (closer == "*" || closer == "_") {
-                    if at_boundary_end(closer, i).is_ok() {
-                        trim_closer = true;
-                        break;
-                    }
-                } else {
-                    trim_closer = true;
-                    break;
-                }
-            }
-        }
-        // Escape loop if notice any list starting tags
-        if let Some(new_list) = inlist {
-            if let Ok((_, true)) = is_list_singleline_tag(new_list, i) {
-                break;
-            }
-        }
-        // Automatically collect breaks and escaped char
-        // and turn escaped spaces into non-breaking spaces
-        // before checking for qwikmark tags
-        if let (true, Ok((input, s))) = (boundary, edge(i)) {
-            boundary = false;
-            if char_total_length > 0 {
-                let (text, _) = text_start.split_at(char_total_length);
-                ss.push(Span::Text(text));
-                char_total_length = 0;
-            }
-            text_start = input;
-            i = input;
-            ss.push(s);
-        } else if let Ok((input, s)) = alt((eom, esc, verbatim, hash, link, bracket, nobracket))(i)
-        {
-            boundary = false;
-            if char_total_length > 0 {
-                let (text, _) = text_start.split_at(char_total_length);
-                ss.push(Span::Text(text));
-                char_total_length = 0;
-            }
-            text_start = input;
-            i = input;
-            // End of Mark (EOM) Indicates a common ending point
-            // such as an end to a block such as a paragraph or
-            // that the file input as ended.
-            match s {
-                Span::EOM => break,
-                // TODO: if hash and there is an associated parent heading,
-                // then setup filters and hashtags
-                Span::Hash(_, _) | Span::Esc(_) => ss.push(s),
-                _ => {
-                    // TODO: if embedded link and span content of heading,
-                    // then setup overlay for merging/overriding of destination sibling heading.
-                    // if wrapped by heading then setup overlay for insertion.
-                    if let Ok((input, kvs)) = attributes(i) {
-                        let s = span_with_attributes(s, kvs);
-                        ss.push(s);
-                        text_start = input;
-                        i = input;
-                    } else if let Span::Verbatim(content, _, _) = s {
-                        if let Ok((input, format)) = preceded(tag("="), key)(i) {
-                            ss.push(Span::Verbatim(content, Some(format), None));
-                            text_start = input;
-                            i = input;
-                        } else {
-                            ss.push(s);
-                        }
-                    } else {
-                        ss.push(s);
-                    }
-                }
-            }
-        } else if let Some(c) = i.chars().next() {
-            boundary = c == ' ' || c == '\n' || c == '\t' || c == '\r';
-            let char_length = c.len_utf8();
-            (_, i) = i.split_at(char_length);
-            char_total_length += char_length;
-        }
-    }
-    if char_total_length > 0 {
-        let (text, i) = text_start.split_at(char_total_length);
-        ss.push(Span::Text(text));
-        text_start = i;
-    }
-    if trim_closer {
-        if let Some(closer) = closer {
-            (_, text_start) = text_start.split_at(closer.len());
-        }
-    }
-    (text_start, ss)
-}
+//#[derive(Debug, PartialEq, Eq)]
+//pub enum HashCmp {
+//    And(Vec<HashCmp>),
+//    Or(Vec<HashCmp>),
+//    Cmp(Box<HashFilter>),
+//}
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
 pub enum HashTag {
@@ -485,6 +189,35 @@ impl fmt::Display for HashTag {
             Self::Num(n) => write!(f, "{n}"),
         }
     }
+}
+
+// Contents concatenates the text within the nested vectors of spans
+pub fn contents<'a>(outer: &Vec<Span<'a>>) -> Vec<&'a str> {
+    outer
+        .iter()
+        .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
+            let rs = match result {
+                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(_, t) => vec![*t],
+                Span::Link(s, _, vs, _) => {
+                    if vs.is_empty() {
+                        vec![*s]
+                    } else {
+                        contents(&vs)
+                    }
+                }
+                Span::Strong(vs, _)
+                | Span::Emphasis(vs, _)
+                | Span::Superscript(vs, _)
+                | Span::Subscript(vs, _)
+                | Span::Highlight(vs, _)
+                | Span::Insert(vs, _)
+                | Span::Delete(vs, _) => contents(&vs),
+                Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![*s],
+                Span::EOM => vec![],
+            };
+            unrolled.extend(rs);
+            unrolled
+        })
 }
 
 // Hashtag Indexes are used to index the hashtag minus any formatting tags
@@ -608,57 +341,384 @@ pub fn hashtags(contents: Vec<&str>) -> Vec<HashTag> {
     hts
 }
 
-// Contents concatenates the text within the nested vectors of spans
-pub fn contents<'a>(outer: Vec<Span<'a>>) -> Vec<&'a str> {
-    outer
-        .into_iter()
-        .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
-            let rs = match result {
-                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(_, t) => vec![t],
-                Span::Link(s, _, vs, _) => {
-                    if vs.is_empty() {
-                        vec![s]
-                    } else {
-                        contents(vs)
-                    }
-                }
-                Span::Strong(vs, _)
-                | Span::Emphasis(vs, _)
-                | Span::Superscript(vs, _)
-                | Span::Subscript(vs, _)
-                | Span::Highlight(vs, _)
-                | Span::Insert(vs, _)
-                | Span::Delete(vs, _) => contents(vs),
-                Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![s],
-                Span::EOM => vec![],
-            };
-            unrolled.extend(rs);
-            unrolled
-        })
+fn hash_field(input: &str) -> IResult<&str, &str> {
+    let (input, (v, _)) = consumed(tuple((is_not(" \t\n\r]#"), opt(is_not("\t\r\n]#")))))(input)?;
+    // NOTE: We may want to add any trailing spaces that where trimmed  back to input
+    // as that could end up joining  words together that where seperated by closing tags.
+    let v = v.trim();
+    Ok((input, v))
 }
 
-// LineHash = { Edge ~ Hash ~ Location }
-// LineChar = { !("|" | NEWLINE) ~ "\\"? ~ ANY }
-// LineEnd  = { "|" | NEWLINE | EOI }
-// LinkLine = { "[[" ~ Location ~ "|"? ~ (!"]]" ~ (Line | LineChar))+ ~ ("]]" ~ Attribute* | &LineEnd) }
-// Line = {
-//     Raw
-//   | LineHash
-//   | Link
-//   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Line | LineChar))+ ~ (POP ~ "]" ~ Attribute* | &LineEnd ~ DROP)
-//   | PUSH(UnboundTag) ~ (!PEEK ~ (Line | LineChar))+ ~ (POP | &(LineEnd ~ DROP))
-//   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Line | LineChar))+ ~ (POP ~ &Edge | &LineEnd ~ DROP)
-//   | LineChar
+//{=format #identifier .class key=value key="value" %comment%}
+// Field      = { ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+fn field(input: &str) -> IResult<&str, &str> {
+    is_not(" \t\r\n]")(input)
+}
+
+// Edge        =  { (" " | "\t")+ | NEWLINE | SOI | EOI }
+// edgetag     = _{
+//     strong
+//   | emphasis
 // }
+fn at_boundary_end<'a>(closer: &'a str, input: &'a str) -> IResult<&'a str, &'a str> {
+    terminated(
+        tag(closer),
+        alt((
+            tag(" "),
+            tag("\t"),
+            tag("\n"),
+            tag("\r"),
+            tag("*"),
+            tag("_"),
+            tag("=]"),
+            tag("+]"),
+            tag("-]"),
+            tag("^"),
+            tag("~"),
+            tag("]]"),
+            tag("{"),
+        )),
+    )(input)
+}
+
+// LinkDlmr  = _{ "|" | &("]" | NEWLINE | EOI) }
+// Locator   =  { (("\\" | !LinkDlmr) ~ ANY)+ }
+fn locator(input: &str) -> IResult<&str, &str> {
+    let (i, l) = is_not("|]")(input)?;
+    let (i, _) = opt(tag("|"))(i)?;
+    Ok((i, l))
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct SpanRefs {
+    tags: Option<HashMap<String, Vec<HashTag>>>,
+    filters: Option<Vec<HashFilter>>,
+    embeds: Option<Vec<(String, String)>>,
+}
+
+impl SpanRefs {
+    // End       =  { NEWLINE ~ NEWLINE | EOI }
+    fn eom<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        // Input has ended
+        if input.is_empty() {
+            return Ok((input, Span::EOM));
+        }
+        // Common block terminator has ended
+        // TODO: Account for whitespace and list indentations
+        let (_i, _s) = tuple((line_ending, line_ending))(input)?;
+        Ok((input, Span::EOM))
+    }
+
+    // LineBreak =  { "\\" ~ &NEWLINE }
+    fn esc<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (i, e) = preceded(
+            tag("\\"),
+            alt((tag(" "), line_ending, take_while_m_n(1, 1, |c| c != ' '))),
+        )(input)?;
+        if e == " " {
+            Ok((i, Span::NBWS(e)))
+        } else if line_ending::<_, ()>(e).is_ok() {
+            Ok((i, Span::LineBreak(e)))
+        } else {
+            Ok((i, Span::Esc(e)))
+        }
+    }
+
+    // HashTag   =  { Edge ~ Hash ~ Location }
+    fn hash<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (i, (filter, h)) = tuple((opt(is_a("!<>=")), preceded(tag("#"), hash_field)))(input)?;
+        filter.map_or(Ok((i, Span::Hash(None, h))), move |f| match f {
+            "!" => Ok((i, Span::Hash(Some(HashOp::NotEqual), h))),
+            "<" => Ok((i, Span::Hash(Some(HashOp::LessThan), h))),
+            "=" => Ok((i, Span::Hash(Some(HashOp::Equal), h))),
+            ">" => Ok((i, Span::Hash(Some(HashOp::GreaterThan), h))),
+            _ => Ok((i, Span::Hash(None, h))),
+        })
+    }
+
+    // UnboundTag  = _{
+    //     Superscript
+    //   | Subscript
+    //   | Hash
+    //   | Verbatim
+    // }
+    // NOTE: Hash and Verbatim where handles separately.
+    fn nobracket<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (i, t) = alt((tag("^"), tag("~")))(input)?;
+        let (i, ss) = self.spans(i, Some(t), None);
+        match t {
+            "^" => Ok((i, Span::Superscript(ss, None))),
+            "~" => Ok((i, Span::Subscript(ss, None))),
+            _ => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alt,
+            ))),
+        }
+    }
+
+    // RawText   =  { (!(PEEK | NEWLINE) ~ ANY)+ }
+    // Raw       =  { PUSH(Verbatim) ~ RawText ~ (POP ~ Attribute* | &End ~ DROP) }
+    fn verbatim<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (input, svtag) = take_while1(|b| b == '`')(input)?;
+        let mut char_total_length: usize = 0;
+        let mut i = input;
+        while !i.is_empty() {
+            if let Ok((i, _evtag)) = tag::<_, &str, ()>("\n")(i) {
+                let (content, _) = input.split_at(char_total_length);
+                return Ok((i, Span::Verbatim(content, None, None)));
+            } else if let Ok((ti, evtag)) = take_while1::<_, &str, ()>(|b| b == '`')(i) {
+                if svtag == evtag {
+                    let (content, _) = input.split_at(char_total_length);
+                    // NOTE: May want to strip whitespace around enclosing backticks:
+                    //  `` `verbatim` `` -> <code>`verbatim`</code>
+                    let content_trimmed = content.trim();
+                    if content_trimmed.starts_with('`') && content_trimmed.ends_with('`') {
+                        return Ok((ti, Span::Verbatim(content_trimmed, None, None)));
+                    }
+                    return Ok((ti, Span::Verbatim(content, None, None)));
+                }
+                i = ti;
+                char_total_length += evtag.len();
+            } else if let Some(c) = i.chars().next() {
+                let char_length = c.len_utf8();
+                (_, i) = i.split_at(char_length);
+                char_total_length += char_length;
+            }
+        }
+        let (content, _) = input.split_at(char_total_length);
+        Ok((i, Span::Verbatim(content, None, None)))
+    }
+
+    // brackettag  = _{
+    //     edgetag    // strong(*), emphasis(_)
+    //   | highlight  // (=)
+    //   | insert     // (+)
+    //   | delete     // (-)
+    // }
+    // NOTE: Added for consistency the Superscript and Subscript
+    //   Span types to bracket tags for consistency and versatility.
+    fn bracket<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (i, t) = preceded(tag("["), is_a("*_=+-^~"))(input)?;
+        let closing_tag = t.to_string() + "]";
+        let (i, ss) = self.spans(i, Some(&closing_tag), None);
+        match t {
+            "*" => Ok((i, Span::Strong(ss, None))),
+            "_" => Ok((i, Span::Emphasis(ss, None))),
+            "=" => Ok((i, Span::Highlight(ss, None))),
+            "+" => Ok((i, Span::Insert(ss, None))),
+            "-" => Ok((i, Span::Delete(ss, None))),
+            "^" => Ok((i, Span::Superscript(ss, None))),
+            "~" => Ok((i, Span::Subscript(ss, None))),
+            _ => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alt,
+            ))),
+        }
+    }
+
+    fn edge<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (i, t) = alt((tag("*"), tag("_")))(input)?;
+        let _ = not(alt((tag(" "), tag("\n"), tag("\t"), tag("\r"))))(i)?;
+        let (i, ss) = self.spans(i, Some(t), None);
+        match t {
+            "*" => Ok((i, Span::Strong(ss, None))),
+            "_" => Ok((i, Span::Emphasis(ss, None))),
+            _ => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alt,
+            ))),
+        }
+    }
+
+    // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
+    fn link<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
+        let (i, (e, l)) = tuple((opt(tag("!")), preceded(tag("[["), locator)))(input)?;
+        let embed = e.is_some();
+        let (i, ss) = self.spans(i, Some("]]"), None);
+        if embed {
+            let index = htindex(&hashtags(contents(&ss)));
+            let link = l.to_string();
+            if let Some(es) = &mut self.embeds {
+                es.push((index, link));
+            } else {
+                self.embeds = Some(vec![(index, link)])
+            }
+        }
+        Ok((i, Span::Link(l, embed, ss, None)))
+    }
+
+    // Char      =  { !NEWLINE ~ "\\"? ~ ANY }
+    // Span      =  {
+    //     Break
+    //   | Raw
+    //   | HashTag
+    //   | Link
+    //   | "[" ~ PUSH(BracketTag) ~ (!(PEEK ~ "]") ~ (Span | Char))+ ~ (POP ~ "]" ~ Attribute* | &End ~ DROP)
+    //   | PUSH(UnboundTag) ~ (!PEEK ~ (Span | Char))+ ~ (POP | &End ~ DROP)
+    //   | Edge ~ PUSH(EdgeTag) ~ (!(PEEK ~ Edge) ~ (Span | Char))+ ~ (POP ~ &Edge | &End ~ DROP)
+    //   | Char
+    //   | NEWLINE ~ !NEWLINE
+    // }
+    // TODO: Look at turn spans function signature
+    //   from (input: &str, closer: Option<&str>)
+    //     to (input: &str, closer: &str)
+    //   where starting closer as "" happens to also be the same as eof/eom
+    fn spans<'a, 'b>(
+        &'b mut self,
+        input: &'a str,
+        closer: Option<&str>,
+        inlist: Option<bool>,
+    ) -> (
+        // Unconsumed input
+        &'a str,
+        // Constructed spans
+        Vec<Span<'a>>,
+        // Heading associated hashtags
+        //Option<HashMap<String, Vec<HashTag>>>,
+        // Heading associated hash filters
+        //Option<HashFilter>,
+        // Heading embedded links
+        //Option<Vec<Span<'a>>>,
+    ) {
+        let mut i = input;
+        let mut ss = Vec::new();
+        //let mut hash_tags: HashMap<String, Vec<HashTag>> = HashMap::new();
+        //let mut hash_filters: Vec<(String, HashOp, Vec<HashTag>)> = Vec::new();
+        //let mut embedded_links: Option<Span<'a>> = None;
+        // Loop through text until reach two newlines
+        // or newline matches valid start of a list item.
+        let mut boundary = true;
+        let mut text_start = input;
+        let mut char_total_length: usize = 0;
+        let mut trim_closer = false;
+        while !i.is_empty() {
+            // println!(
+            //     "input: {:?}\n  boundary: {:?}\n  closer: {:?}\n  text_start: {:?}",
+            //     i, boundary, closer, text_start
+            // );
+            // if we just started or next char is boundary
+            if let Some(closer) = closer {
+                if i.starts_with(closer) {
+                    if !boundary && (closer == "*" || closer == "_") {
+                        if at_boundary_end(closer, i).is_ok() {
+                            trim_closer = true;
+                            break;
+                        }
+                    } else {
+                        trim_closer = true;
+                        break;
+                    }
+                }
+            }
+            // Escape loop if notice any list starting tags
+            if let Some(new_list) = inlist {
+                if let Ok((_, true)) = is_list_singleline_tag(new_list, i) {
+                    break;
+                }
+            }
+            // Automatically collect breaks and escaped char
+            // and turn escaped spaces into non-breaking spaces
+            // before checking for qwikmark tags
+            let (input, s) = if let (true, Ok((input, s))) = (boundary, self.edge(i)) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.eom(i) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.esc(i) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.hash(i) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.verbatim(i) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.link(i) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.bracket(i) {
+                (input, Some(s))
+            } else if let Ok((input, s)) = self.nobracket(i) {
+                (input, Some(s))
+            } else {
+                (i, None)
+            };
+            if let Some(s) = s {
+                boundary = false;
+                if char_total_length > 0 {
+                    let (text, _) = text_start.split_at(char_total_length);
+                    ss.push(Span::Text(text));
+                    char_total_length = 0;
+                }
+                text_start = input;
+                i = input;
+
+                // End of Mark (EOM) Indicates a common ending point
+                // such as an end to a block such as a paragraph or
+                // that the file input as ended.
+                match s {
+                    Span::EOM => break,
+                    Span::Esc(_) => ss.push(s),
+                    // Bundle hash tag/filter to return to associated heading.
+                    Span::Hash(op, ht) => {
+                        ss.push(s);
+                        let tags = hashtags(vec![ht]);
+                        let index = htindex(&tags);
+                        if let Some(op) = op {
+                            let hf = HashFilter { index, op, tags };
+                            if self.filters.is_some() {
+                                self.filters.as_mut().map(move |v| v.push(hf));
+                            } else {
+                                self.filters = Some(vec![hf]);
+                            }
+                        } else if let Some(ref mut hts) = self.tags {
+                            hts.insert(index, tags);
+                        } else {
+                            let mut hts = HashMap::new();
+                            hts.insert(index, tags);
+                            self.tags = Some(hts);
+                        }
+                    }
+                    _ => {
+                        // TODO: if embedded link and span content of heading,
+                        // then setup overlay for merging/overriding of destination sibling heading.
+                        // if wrapped by heading then setup overlay for insertion.
+                        if let Ok((input, kvs)) = attributes(i) {
+                            let s = span_with_attributes(s, kvs);
+                            ss.push(s);
+                            text_start = input;
+                            i = input;
+                        } else if let Span::Verbatim(content, _, _) = s {
+                            if let Ok((input, format)) = preceded(tag("="), key)(i) {
+                                ss.push(Span::Verbatim(content, Some(format), None));
+                                text_start = input;
+                                i = input;
+                            } else {
+                                ss.push(s);
+                            }
+                        } else {
+                            ss.push(s);
+                        }
+                    }
+                }
+            } else if let Some(c) = i.chars().next() {
+                boundary = c == ' ' || c == '\n' || c == '\t' || c == '\r';
+                let char_length = c.len_utf8();
+                (_, i) = i.split_at(char_length);
+                char_total_length += char_length;
+            }
+        }
+        if char_total_length > 0 {
+            let (text, i) = text_start.split_at(char_total_length);
+            ss.push(Span::Text(text));
+            text_start = i;
+        }
+        if trim_closer {
+            if let Some(closer) = closer {
+                (_, text_start) = text_start.split_at(closer.len());
+            }
+        }
+        (text_start, ss)
+    }
+}
 
 // BLOCKS
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum HashFilter {
-    Op(HashOp, Vec<HashTag>),
-    Or(Box<HashFilter>, Box<HashFilter>),
-    And(Box<HashFilter>, Box<HashFilter>),
-}
 // Block = {
 //     Div
 //   | Quote
@@ -671,7 +731,12 @@ pub enum HashFilter {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Block<'a> {
     // Div(name, [Block], attributes)
-    Div(&'a str, Vec<Block<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Div(
+        &'a str,
+        Vec<Block<'a>>,
+        Option<HashMap<&'a str, &'a str>>,
+        SpanRefs,
+    ),
     //Quote(Vec<Block<'a>>),
     // Heading(level, [Span], [Block], {attributes}, {hashtags}, {filters/dynamic-list})
     Heading(
@@ -683,17 +748,16 @@ pub enum Block<'a> {
         Vec<Block<'a>>,
         // List of attributes
         Option<HashMap<&'a str, &'a str>>,
-        // List of associated hashtags
-        Option<HashMap<String, Vec<HashTag>>>,
-        // List of associated filters
-        Option<HashFilter>,
+        // List of associated hash tags
+        // List of associated hash filters
+        SpanRefs,
     ),
     // Code(format, [Span::Text], attributes)
     Code(Option<&'a str>, &'a str, Option<HashMap<&'a str, &'a str>>),
     // List(items, attributes)
     List(Vec<ListItem<'a>>, Option<HashMap<&'a str, &'a str>>),
     //Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
-    Paragraph(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Paragraph(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>, SpanRefs),
 }
 
 // H1      = { "#" }
@@ -908,13 +972,14 @@ fn list_block<'a>(
     depth: &'a str,
     index: Index<'a>,
     attrs: Option<HashMap<&'a str, &'a str>>,
+    span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, Option<Block<'a>>> {
     let mut lis = Vec::new();
     let mut i = input;
     let mut idx = index;
     loop {
         // let (i, attrs) = opt(terminated(tuple((space0, attributes)), line_ending))(input)?;
-        let (input, li) = list_item(i, depth, idx)?;
+        let (input, li) = list_item(i, depth, idx, span_refs)?;
         i = input;
         lis.push(li);
         if let (input, Some((d, index))) = list_tag(i)? {
@@ -930,7 +995,11 @@ fn list_block<'a>(
     Ok((i, Some(Block::List(lis, attrs))))
 }
 
-fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Option<Block<'a>>> {
+fn nested_list_block<'a>(
+    input: &'a str,
+    depth: &'a str,
+    span_refs: &mut SpanRefs,
+) -> IResult<&'a str, Option<Block<'a>>> {
     let (i, depth_attrs) = opt(terminated(
         tuple((line_ending, space0, attributes)),
         line_ending,
@@ -941,7 +1010,7 @@ fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Opt
                 if d.len() <= depth.len() {
                     Ok((input, None))
                 } else {
-                    list_block(i, d, index, Some(ah))
+                    list_block(i, d, index, Some(ah), span_refs)
                 }
             } else {
                 Ok((input, None))
@@ -949,7 +1018,7 @@ fn nested_list_block<'a>(input: &'a str, depth: &'a str) -> IResult<&'a str, Opt
         } else if d.len() <= depth.len() {
             Ok((input, None))
         } else {
-            list_block(i, d, index, None)
+            list_block(i, d, index, None, span_refs)
         }
     } else {
         Ok((input, None))
@@ -961,21 +1030,22 @@ fn list_item<'a>(
     input: &'a str,
     depth: &'a str,
     index: Index<'a>,
+    span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, ListItem<'a>> {
     // NOTE: Verify spans should not be able to fail. i.e. Make a test case for empty string ""
     // Or if needs to fail wrap in opt(spans...)
-    let (input, ss) = spans(input, None, Some(true));
-    let (input, slb) = nested_list_block(input, depth)?;
+    let (input, ss) = span_refs.spans(input, None, Some(true));
+    let (input, slb) = nested_list_block(input, depth, span_refs)?;
     Ok((input, ListItem(index, ss, slb)))
 }
 
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
 //                ~ (Unordered | Ordered | Definition)
 //                ~ (" " | NEWLINE) ~ ListItem)+ }
-fn list(input: &str) -> IResult<&str, Block<'_>> {
+fn list<'a>(input: &'a str, span_refs: &mut SpanRefs) -> IResult<&'a str, Block<'a>> {
     if let (i, Some((d, index))) = list_tag(input)? {
         if d.is_empty() {
-            if let (i, Some(lb)) = list_block(i, d, index, None)? {
+            if let (i, Some(lb)) = list_block(i, d, index, None, span_refs)? {
                 return Ok((i, lb));
             }
         }
@@ -1010,8 +1080,9 @@ pub enum Align {
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
 #[allow(clippy::unnecessary_wraps)]
 fn paragraph(input: &str) -> IResult<&str, Block<'_>> {
-    let (i, ss) = spans(input, None, None);
-    Ok((i, Block::Paragraph(ss, None)))
+    let mut span_refs = SpanRefs::default();
+    let (i, ss) = span_refs.spans(input, None, None);
+    Ok((i, Block::Paragraph(ss, None, span_refs)))
 }
 
 // Div = {
@@ -1024,6 +1095,7 @@ fn blocks<'a>(
     input: &'a str,
     divs: bool,
     refs: Option<HLevel>,
+    parent_span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, Vec<Block<'a>>> {
     let mut bs = Vec::new();
     // WARN: utilizing multispace here would cause lists that start with spaces
@@ -1044,10 +1116,11 @@ fn blocks<'a>(
         let (input, attrs) = opt(terminated(attributes, line_ending))(i)?;
         i = input;
         if let Ok((input, Some(HLevel::DIV(name)))) = opt(div_start)(i) {
-            let (input, div_bs) = blocks(input, true, refs)?;
+            let mut span_refs = SpanRefs::default();
+            let (input, div_bs) = blocks(input, true, refs, &mut span_refs)?;
             let (input, _) = opt(div_close)(input)?;
             i = input;
-            bs.push(Block::Div(name, div_bs, attrs));
+            bs.push(Block::Div(name, div_bs, attrs, span_refs));
         } else if let Ok((input, Some(hl))) = opt(head_start)(i) {
             if let Some(level) = refs {
                 if level >= hl {
@@ -1055,22 +1128,24 @@ fn blocks<'a>(
                     return Ok((i, bs));
                 }
             }
-            let (input, head_spans) = spans(input, None, Some(false));
-            let (input, head_blocks) = blocks(input, divs, Some(hl))?;
+            let mut span_refs = SpanRefs::default();
+            let (input, head_spans) = span_refs.spans(input, None, Some(false));
+            let (input, head_blocks) = blocks(input, divs, Some(hl), &mut span_refs)?;
             i = input;
             bs.push(Block::Heading(
                 hl,
                 head_spans,
                 head_blocks,
                 attrs,
-                None,
-                None,
+                span_refs,
             ));
+        } else if let Ok((input, Block::List(ls, _))) = list(i, parent_span_refs) {
+            i = input;
+            bs.push(Block::List(ls, attrs));
         } else {
-            let (input, b) = match alt((code, list, paragraph))(i)? {
+            let (input, b) = match alt((code, paragraph))(i)? {
                 (i, Block::Code(f, c, _)) => (i, Block::Code(f, c, attrs)),
-                (i, Block::List(ls, _)) => (i, Block::List(ls, attrs)),
-                (i, Block::Paragraph(ss, _)) => (i, Block::Paragraph(ss, attrs)),
+                (i, Block::Paragraph(ss, _, srs)) => (i, Block::Paragraph(ss, attrs, srs)),
                 _ => {
                     return Err(nom::Err::Error(nom::error::Error::new(
                         input,
@@ -1089,16 +1164,19 @@ fn blocks<'a>(
 #[derive(Debug, PartialEq, Eq)]
 pub struct Document<'a> {
     pub blocks: Vec<Block<'a>>,
-    // References to a aist of headings within the document
-    pub refs: Option<HashMap<&'a str, Block<'a>>>,
+    // Block levle hash tags, filter tags, and embedded links
+    pub span_refs: SpanRefs,
+    // References to a list of headings within the document
+    // pub head_refs: Option<HashMap<&'a str, Block<'a>>>,
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
 pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
-    match blocks(input, false, None) {
+    let mut span_refs = SpanRefs::default();
+    match blocks(input, false, None, &mut span_refs) {
         Ok((_, bs)) => Ok(Document {
             blocks: bs,
-            refs: None,
+            span_refs,
         }),
         Err(e) => Err(Box::from(format!("Unable to parse input: {e:?}"))),
     }
@@ -1126,7 +1204,12 @@ mod tests {
             ast("line\\\n"),
             vec![Block::Paragraph(
                 vec![Span::Text("line"), Span::LineBreak("\n")],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1137,7 +1220,12 @@ mod tests {
             ast("left\\ right"),
             vec![Block::Paragraph(
                 vec![Span::Text("left"), Span::NBWS(" "), Span::Text("right")],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1152,7 +1240,12 @@ mod tests {
                     Span::Strong(vec![Span::Text("strong")], None),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1170,7 +1263,12 @@ mod tests {
                     ),
                     Span::Text(" r")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1192,7 +1290,12 @@ mod tests {
                     ),
                     Span::Text(" r")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1207,7 +1310,12 @@ mod tests {
                     Span::Emphasis(vec![Span::Strong(vec![Span::Text("s")], None)], None),
                     Span::Text(" r")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1222,7 +1330,12 @@ mod tests {
                     Span::Verbatim("verbatim", Some("fmt"), None),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1237,7 +1350,12 @@ mod tests {
                     Span::Verbatim("verbatim", None, None),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1256,7 +1374,12 @@ mod tests {
                     ),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1271,7 +1394,12 @@ mod tests {
                     Span::Verbatim("`verbatim`", None, None),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1280,7 +1408,15 @@ mod tests {
     fn test_block_paragraph_hash_empty_eom() {
         assert_eq!(
             ast("left #"),
-            vec![Block::Paragraph(vec![Span::Text("left #")], None)]
+            vec![Block::Paragraph(
+                vec![Span::Text("left #")],
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None
+                },
+            )]
         );
     }
 
@@ -1288,20 +1424,37 @@ mod tests {
     fn test_block_paragraph_hash_empty_space() {
         assert_eq!(
             ast("left # "),
-            vec![Block::Paragraph(vec![Span::Text("left # ")], None)]
+            vec![Block::Paragraph(
+                vec![Span::Text("left # ")],
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None
+                },
+            )]
         );
     }
 
     #[test]
     fn test_block_paragraph_hash_field_eom() {
         assert_eq!(
-            ast("left !#hash"),
+            ast("left !#Hash"),
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
-                    Span::Hash(Some(HashOp::NotEqual), "hash")
+                    Span::Hash(Some(HashOp::NotEqual), "Hash")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: Some(vec![HashFilter {
+                        index: "hash".to_string(),
+                        op: HashOp::NotEqual,
+                        tags: vec![HashTag::Str("hash".to_string())],
+                    }]),
+                    embeds: None
+                },
             )]
         );
     }
@@ -1316,7 +1469,19 @@ mod tests {
                     Span::Hash(None, "hash 1"),
                     Span::Text("\nnext line")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: Some(HashMap::from([(
+                        "hash".to_string(),
+                        vec![
+                            HashTag::Str("hash".to_string()),
+                            HashTag::Space,
+                            HashTag::Num(1)
+                        ]
+                    )])),
+                    filters: None,
+                    embeds: None
+                },
             )]
         );
     }
@@ -1327,7 +1492,12 @@ mod tests {
             ast("left ![[loc]]"),
             vec![Block::Paragraph(
                 vec![Span::Text("left "), Span::Link("loc", true, vec![], None)],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: Some(vec![("-".to_string(), "loc".to_string())]),
+                },
             )]
         );
     }
@@ -1335,7 +1505,7 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_text_super() {
         assert_eq!(
-            ast("left [[loc|text^sup^]] right"),
+            ast("left [[loc|text^SUP^]] right"),
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
@@ -1344,13 +1514,18 @@ mod tests {
                         false,
                         vec![
                             Span::Text("text"),
-                            Span::Superscript(vec![Span::Text("sup")], None)
+                            Span::Superscript(vec![Span::Text("SUP")], None)
                         ],
                         None
                     ),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1358,19 +1533,24 @@ mod tests {
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
         assert_eq!(
-            ast("left ![[loc|text `verbatim`]] right"),
+            ast("left ![[Loc|text `Verbatim`]] right"),
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
                     Span::Link(
-                        "loc",
+                        "Loc",
                         true,
-                        vec![Span::Text("text "), Span::Verbatim("verbatim", None, None)],
+                        vec![Span::Text("text "), Span::Verbatim("Verbatim", None, None)],
                         None
                     ),
                     Span::Text(" right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: Some(vec![("text-verbatim".to_string(), "Loc".to_string())]),
+                },
             )]
         );
     }
@@ -1398,27 +1578,37 @@ mod tests {
                   ], None),
                   Span::Text(" text-right")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
 
     #[test]
     fn test_block_paragraph_link_attributes() {
-        let doc = ast("left ![[loc]]{k1=v1 k_2=v_2}");
+        let doc = ast("left ![[LOC]]{k1=v1 k_2=v_2}");
         assert_eq!(
             doc,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
                     Span::Link(
-                        "loc",
+                        "LOC",
                         true,
                         vec![],
                         Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     )
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: Some(vec![("-".to_string(), "LOC".to_string())]),
+                },
             )]
         );
     }
@@ -1438,7 +1628,12 @@ mod tests {
                         Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     ),
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1458,7 +1653,12 @@ mod tests {
                         Some(HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])),
                     )
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1472,8 +1672,11 @@ mod tests {
                 vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                 vec![],
                 None,
-                None,
-                None
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1488,10 +1691,21 @@ mod tests {
                     Span::Text("header\nnext line "),
                     Span::Strong(vec![Span::Text("strong")], None)
                 ],
-                vec![Block::Paragraph(vec![Span::Text("new paragraph")], None)],
+                vec![Block::Paragraph(
+                    vec![Span::Text("new paragraph")],
+                    None,
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None
+                    }
+                )],
                 None,
-                None,
-                None
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1507,14 +1721,35 @@ mod tests {
                     vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                     vec![Block::Div(
                         "div2",
-                        vec![Block::Paragraph(vec![Span::Text("  line")], None)],
-                        None
+                        vec![Block::Paragraph(
+                            vec![Span::Text("  line")],
+                            None,
+                            SpanRefs {
+                                tags: None,
+                                filters: None,
+                                embeds: None
+                            }
+                        )],
+                        None,
+                        SpanRefs {
+                            tags: None,
+                            filters: None,
+                            embeds: None,
+                        },
                     )],
                     None,
-                    None,
-                    None
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None,
+                    },
                 )],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1526,7 +1761,12 @@ mod tests {
             vec![Block::Div(
                 "div1",
                 vec![Block::Code(Some("code"), "line1\n````\nline3", None)],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1543,6 +1783,11 @@ mod tests {
                     Some(HashMap::from([("format", "code")]))
                 )],
                 None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
@@ -1555,29 +1800,90 @@ mod tests {
                 "div1",
                 vec![Block::Paragraph(
                     vec![Span::Text("test paragraph")],
-                    Some(HashMap::from([("format", "code")]))
+                    Some(HashMap::from([("format", "code")])),
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None,
+                    },
                 )],
-                None
+                None,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                },
             )]
         );
     }
 
     #[test]
     fn test_block_unordered_list() {
+        let doc =
+            document("- l1 #H 1\n\n- l2 #H 2\n\n  - l2,1 >#H 3\n\n  - l2,2 !#H 4\n\n    - l2,2,1\n\n  - l2,3\n\n- l3")
+                .unwrap();
         assert_eq!(
-            ast("- l1\n\n- l2\n\n  - l2,1\n\n  - l2,2\n\n    - l2,2,1\n\n  - l2,3\n\n- l3"),
+            doc.span_refs,
+            SpanRefs {
+                tags: Some(HashMap::from([(
+                    "h".to_string(),
+                    vec![
+                        HashTag::Str("h".to_string()),
+                        HashTag::Space,
+                        HashTag::Num(2)
+                    ]
+                )])),
+                filters: Some(vec![
+                    HashFilter {
+                        index: "h".to_string(),
+                        op: HashOp::GreaterThan,
+                        tags: vec![
+                            HashTag::Str("h".to_string()),
+                            HashTag::Space,
+                            HashTag::Num(3)
+                        ]
+                    },
+                    HashFilter {
+                        index: "h".to_string(),
+                        op: HashOp::NotEqual,
+                        tags: vec![
+                            HashTag::Str("h".to_string()),
+                            HashTag::Space,
+                            HashTag::Num(4)
+                        ]
+                    }
+                ]),
+                embeds: None,
+            }
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::List(
                 vec![
-                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
-                        vec![Span::Text("l2")],
+                        vec![Span::Text("l1 "), Span::Hash(None, "H 1")],
+                        None
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
                         Some(Block::List(
                             vec![
-                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                                 ListItem(
                                     Index::Unordered("-"),
-                                    vec![Span::Text("l2,2")],
+                                    vec![
+                                        Span::Text("l2,1 "),
+                                        Span::Hash(Some(HashOp::GreaterThan), "H 3")
+                                    ],
+                                    None
+                                ),
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    vec![
+                                        Span::Text("l2,2 "),
+                                        Span::Hash(Some(HashOp::NotEqual), "H 4")
+                                    ],
                                     Some(Block::List(
                                         vec![ListItem(
                                             Index::Unordered("-"),
@@ -1738,26 +2044,54 @@ mod tests {
     #[test]
     fn test_block_header_sigleline_unordered_list() {
         assert_eq!(
-            ast("## [*strong heading*]\n- l1\n- l2"),
+            ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
             vec![Block::Heading(
                 HLevel::H2,
                 vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                 vec![Block::List(
                     vec![
-                        ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
-                        ListItem(Index::Unordered("-"), vec![Span::Text("l2")], None)
+                        ListItem(
+                            Index::Unordered("-"),
+                            vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
+                            None
+                        ),
+                        ListItem(
+                            Index::Unordered("-"),
+                            vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
+                            None
+                        )
                     ],
                     None
                 )],
                 None,
-                None,
-                None
+                SpanRefs {
+                    tags: Some(HashMap::from([
+                        (
+                            "ha".to_string(),
+                            vec![
+                                HashTag::Str("ha".to_string()),
+                                HashTag::Space,
+                                HashTag::Num(1)
+                            ]
+                        ),
+                        (
+                            "hb".to_string(),
+                            vec![
+                                HashTag::Str("hb".to_string()),
+                                HashTag::Space,
+                                HashTag::Num(-1)
+                            ]
+                        )
+                    ])),
+                    filters: None,
+                    embeds: None,
+                },
             )]
         )
     }
 
     #[test]
-    fn test_block_header_sigleline_span_not_list() {
+    fn test_block_header_sigleline_span_not_start_of_line_so_not_list() {
         assert_eq!(
             ast("## [*strong heading\n  - l1*]\n  - l2"),
             vec![Block::Heading(
@@ -1768,8 +2102,11 @@ mod tests {
                 ],
                 vec![],
                 None,
-                None,
-                None
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                }
             )]
         )
     }
@@ -1805,23 +2142,52 @@ mod tests {
                 HLevel::H1,
                 vec![Span::Text("h1")],
                 vec![
-                    Block::Paragraph(vec![Span::Text("doc > h1")], None),
+                    Block::Paragraph(
+                        vec![Span::Text("doc > h1")],
+                        None,
+                        SpanRefs {
+                            tags: None,
+                            filters: None,
+                            embeds: None
+                        }
+                    ),
                     Block::Heading(
                         HLevel::H2,
                         vec![Span::Text("h2a")],
                         vec![
-                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None),
+                            Block::Paragraph(
+                                vec![Span::Text("doc > h1 > h2a")],
+                                None,
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
+                            ),
                             Block::Div(
                                 "d1",
                                 vec![
-                                    Block::Paragraph(vec![Span::Text("doc > h1 > h2a > d1")], None),
+                                    Block::Paragraph(
+                                        vec![Span::Text("doc > h1 > h2a > d1")],
+                                        None,
+                                        SpanRefs {
+                                            tags: None,
+                                            filters: None,
+                                            embeds: None
+                                        }
+                                    ),
                                     Block::Heading(
                                         HLevel::H3,
                                         vec![Span::Text("h3a")],
                                         vec![
                                             Block::Paragraph(
                                                 vec![Span::Text("doc > h1 > h2a > d1 > h3a")],
-                                                None
+                                                None,
+                                                SpanRefs {
+                                                    tags: None,
+                                                    filters: None,
+                                                    embeds: None
+                                                }
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
@@ -1830,11 +2196,19 @@ mod tests {
                                                     vec![Span::Text(
                                                         "doc > h1 > h2a > d1 > h3a > h4a"
                                                     )],
-                                                    None
+                                                    None,
+                                                    SpanRefs {
+                                                        tags: None,
+                                                        filters: None,
+                                                        embeds: None
+                                                    }
                                                 )],
                                                 None,
-                                                None,
-                                                None
+                                                SpanRefs {
+                                                    tags: None,
+                                                    filters: None,
+                                                    embeds: None
+                                                }
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
@@ -1843,35 +2217,69 @@ mod tests {
                                                     vec![Span::Text(
                                                         "doc > h1 > h2a > d1 > h3a > h4b"
                                                     )],
-                                                    None
+                                                    None,
+                                                    SpanRefs {
+                                                        tags: None,
+                                                        filters: None,
+                                                        embeds: None
+                                                    }
                                                 )],
                                                 None,
-                                                None,
-                                                None
+                                                SpanRefs {
+                                                    tags: None,
+                                                    filters: None,
+                                                    embeds: None
+                                                }
                                             )
                                         ],
                                         None,
-                                        None,
-                                        None
+                                        SpanRefs {
+                                            tags: None,
+                                            filters: None,
+                                            embeds: None
+                                        }
                                     )
                                 ],
-                                None
+                                None,
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
                             ),
-                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None),
+                            Block::Paragraph(
+                                vec![Span::Text("doc > h1 > h2a")],
+                                None,
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
+                            ),
                             Block::Heading(
                                 HLevel::H3,
                                 vec![Span::Text("h3b")],
                                 vec![
                                     Block::Paragraph(
                                         vec![Span::Text("doc > h1 > h2a > h3b")],
-                                        None
+                                        None,
+                                        SpanRefs {
+                                            tags: None,
+                                            filters: None,
+                                            embeds: None,
+                                        }
                                     ),
                                     Block::Div(
                                         "d2",
                                         vec![
                                             Block::Paragraph(
                                                 vec![Span::Text("doc > h1 > h2a > h3b > d2")],
-                                                None
+                                                None,
+                                                SpanRefs {
+                                                    tags: None,
+                                                    filters: None,
+                                                    embeds: None,
+                                                }
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
@@ -1880,50 +2288,88 @@ mod tests {
                                                     vec![Span::Text(
                                                         "doc > h1 > h2a > h3b > d2 > h4b"
                                                     )],
-                                                    None
+                                                    None,
+                                                    SpanRefs {
+                                                        tags: None,
+                                                        filters: None,
+                                                        embeds: None,
+                                                    }
                                                 )],
                                                 None,
-                                                None,
-                                                None
+                                                SpanRefs {
+                                                    tags: None,
+                                                    filters: None,
+                                                    embeds: None,
+                                                }
                                             )
                                         ],
-                                        None
+                                        None,
+                                        SpanRefs {
+                                            tags: None,
+                                            filters: None,
+                                            embeds: None
+                                        }
                                     )
                                 ],
                                 None,
-                                None,
-                                None
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None,
+                                }
                             )
                         ],
                         None,
-                        None,
-                        None
+                        SpanRefs {
+                            tags: None,
+                            filters: None,
+                            embeds: None,
+                        }
                     ),
                     Block::Heading(
                         HLevel::H2,
                         vec![Span::Text("h2a")],
                         vec![
-                            Block::Paragraph(vec![Span::Text("doc > h1 > h2b")], None),
+                            Block::Paragraph(
+                                vec![Span::Text("doc > h1 > h2b")],
+                                None,
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
+                            ),
                             Block::Paragraph(
                                 vec![Span::Text(":::\ndoc > h1 > h2b // No change\n")],
-                                None
+                                None,
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
                             )
                         ],
                         None,
-                        None,
-                        None
+                        SpanRefs {
+                            tags: None,
+                            filters: None,
+                            embeds: None,
+                        }
                     )
                 ],
                 None,
-                None,
-                None
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: None,
+                }
             )]
         );
     }
 
     #[test]
     fn test_content_and_hashtag_index_of_block_paragraph_link_with_location_and_span() {
-        let doc = ast("Left \\\n![[loc|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n");
+        let doc = ast("Left \\\n![[loC|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n");
         assert_eq!(
             doc,
             vec![Block::Paragraph(
@@ -1931,7 +2377,7 @@ mod tests {
                     Span::Text("Left "),
                     Span::LineBreak("\n"),
                     Span::Link(
-                        "loc",
+                        "loC",
                         true,
                         vec![
                             Span::Text("text-32 "),
@@ -1951,11 +2397,23 @@ mod tests {
                     Span::Hash(None, "Level 1"),
                     Span::Text("\n")
                 ],
-                None
+                None,
+                SpanRefs {
+                    tags: Some(HashMap::from([(
+                        "level".to_string(),
+                        vec![
+                            HashTag::Str("level".to_string()),
+                            HashTag::Space,
+                            HashTag::Num(1)
+                        ]
+                    )])),
+                    filters: None,
+                    embeds: Some(vec![("text-v-ab".to_string(), "loC".to_string())])
+                }
             )]
         );
-        if let Block::Paragraph(ss, _) = &doc[0] {
-            let ts = contents(ss.to_vec());
+        if let Block::Paragraph(ss, _, _srs) = &doc[0] {
+            let ts = contents(&ss.to_vec());
             assert_eq!(
                 ts,
                 vec!["Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "Level 1", "\n"]
@@ -1997,13 +2455,21 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_link_span() {
         let doc = ast("# ![[loc|Level 0]]");
-        if let Block::Heading(_, ss, _, _, _, _) = &doc[0] {
-            let ts = contents(ss.to_vec());
+        if let Block::Heading(_, ss, _, _, srs) = &doc[0] {
+            let ts = contents(&ss.to_vec());
             let hts = hashtags(ts);
             let s = htlabel(&hts);
             assert_eq!(s, "level-0");
             let s = htindex(&hts);
             assert_eq!(s, "level");
+            assert_eq!(
+                *srs,
+                SpanRefs {
+                    tags: None,
+                    filters: None,
+                    embeds: Some(vec![("level".to_string(), "loc".to_string())])
+                }
+            );
         } else {
             panic!("Not able to get span from heading {:?}", doc);
         }
@@ -2012,8 +2478,8 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_negative_digit_only() {
         let doc = ast("# -33-32 31 -30");
-        if let Block::Heading(_, ss, _, _, _, _) = &doc[0] {
-            let ts = contents(ss.to_vec());
+        if let Block::Heading(_, ss, _, _, _) = &doc[0] {
+            let ts = contents(&ss.to_vec());
             let hts = hashtags(ts);
             let s = htlabel(&hts);
             assert_eq!(s, "--33-32-31--30");
