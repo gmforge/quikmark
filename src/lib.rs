@@ -737,26 +737,32 @@ impl SpanRefs {
 // }
 #[derive(Debug, PartialEq, Eq)]
 pub enum Block<'a> {
-    // Div(name, [Block], attributes)
     Div(
+        // Div Name
         &'a str,
+        // Index
+        String,
+        // Contained Blocks
         Vec<Block<'a>>,
+        // Attributes
         Option<IndexMap<&'a str, &'a str>>,
+        // Relative hash tags, hash filters and embedded links
         SpanRefs,
     ),
     //Quote(Vec<Block<'a>>),
-    // Heading(level, [Span], [Block], {attributes}, {hashtags}, {filters/dynamic-list})
     Heading(
+        // Heading level
         HLevel<'a>,
+        // Index
+        String,
+        // Contained Spans
         Vec<Span<'a>>,
         // List of next level contained headings and other blocks
         //   Similar to Adjacency List Concept
-        // Option<IndexMap<String, &'a Block<'a>>>,
         Vec<Block<'a>>,
-        // List of attributes
+        // Attributes
         Option<IndexMap<&'a str, &'a str>>,
-        // List of associated hash tags
-        // List of associated hash filters
+        // Relative hash tags, hash filters, and embedded links
         SpanRefs,
     ),
     // Code(format, [Span::Text], attributes)
@@ -874,7 +880,10 @@ pub enum Index<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ListItem<'a>(
+    // List type defined by List starting tag
     Index<'a>,
+    // List Item Index
+    String,
     // Block::Paragraph(Vec<Span<'a>>),
     Vec<Span<'a>>,
     // Block::List(Vec<ListItem<'a>>),
@@ -1043,7 +1052,13 @@ fn list_item<'a>(
     // Or if needs to fail wrap in opt(spans...)
     let (input, ss) = span_refs.spans(input, None, Some(true));
     let (input, slb) = nested_list_block(input, depth, span_refs)?;
-    Ok((input, ListItem(index, ss, slb)))
+    let list_item_index = match index {
+        Index::Ordered(Enumerator::Alpha(s))
+        | Index::Ordered(Enumerator::Digit(s))
+        | Index::Definition(s) => htindex(&hashtags(vec![s])),
+        Index::Unordered(_) | Index::Task(_, _) => htindex(&hashtags(contents(&ss))),
+    };
+    Ok((input, ListItem(index, list_item_index, ss, slb)))
 }
 
 // ListHead   = { ((NEWLINE+ | SOI) ~ PEEK[..]
@@ -1127,7 +1142,8 @@ fn blocks<'a>(
             let (input, div_bs) = blocks(input, true, refs, &mut span_refs)?;
             let (input, _) = opt(div_close)(input)?;
             i = input;
-            bs.push(Block::Div(name, div_bs, attrs, span_refs));
+            let div_index = htindex(&hashtags(vec![name]));
+            bs.push(Block::Div(name, div_index, div_bs, attrs, span_refs));
         } else if let Ok((input, Some(hl))) = opt(head_start)(i) {
             if let Some(level) = refs {
                 if level >= hl {
@@ -1139,8 +1155,10 @@ fn blocks<'a>(
             let (input, head_spans) = span_refs.spans(input, None, Some(false));
             let (input, head_blocks) = blocks(input, divs, Some(hl), &mut span_refs)?;
             i = input;
+            let head_index = htindex(&hashtags(contents(&head_spans)));
             bs.push(Block::Heading(
                 hl,
+                head_index,
                 head_spans,
                 head_blocks,
                 attrs,
@@ -1676,6 +1694,7 @@ mod tests {
             ast("## [*strong heading*]"),
             vec![Block::Heading(
                 HLevel::H2,
+                "strong-heading".to_string(),
                 vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                 vec![],
                 None,
@@ -1694,6 +1713,7 @@ mod tests {
             ast("## header\nnext line [*strong*]\n\nnew paragraph"),
             vec![Block::Heading(
                 HLevel::H2,
+                "header-next-line-strong".to_string(),
                 vec![
                     Span::Text("header\nnext line "),
                     Span::Strong(vec![Span::Text("strong")], None)
@@ -1723,11 +1743,14 @@ mod tests {
             ast("::: div1\n\n## [*strong heading*]\n\n::: div2\n\n  line"),
             vec![Block::Div(
                 "div1",
+                "div1".to_string(),
                 vec![Block::Heading(
                     HLevel::H2,
+                    "strong-heading".to_string(),
                     vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                     vec![Block::Div(
                         "div2",
+                        "div2".to_string(),
                         vec![Block::Paragraph(
                             vec![Span::Text("  line")],
                             None,
@@ -1764,9 +1787,10 @@ mod tests {
     #[test]
     fn test_block_div_w_code() {
         assert_eq!(
-            ast("::: div1\n\n```=code\nline1\n````\nline3\n```\n\n:::\n"),
+            ast("::: div---1\n\n```=code\nline1\n````\nline3\n```\n\n:::\n"),
             vec![Block::Div(
-                "div1",
+                "div---1",
+                "div--1".to_string(),
                 vec![Block::Code(Some("code"), "line1\n````\nline3", None)],
                 None,
                 SpanRefs {
@@ -1784,6 +1808,7 @@ mod tests {
             ast("::: div1\n\n{format=code}\n```=fmt\nline1\n````\nline3\n```\n\n:::\n"),
             vec![Block::Div(
                 "div1",
+                "div1".to_string(),
                 vec![Block::Code(
                     Some("fmt"),
                     "line1\n````\nline3",
@@ -1805,6 +1830,7 @@ mod tests {
             ast("::: div1\n\n{format=code}\ntest paragraph"),
             vec![Block::Div(
                 "div1",
+                "div1".to_string(),
                 vec![Block::Paragraph(
                     vec![Span::Text("test paragraph")],
                     Some(IndexMap::from([("format", "code")])),
@@ -1869,16 +1895,19 @@ mod tests {
                 vec![
                     ListItem(
                         Index::Unordered("-"),
+                        "l1-h-1".to_string(),
                         vec![Span::Text("l1 "), Span::Hash(None, "H 1")],
                         None
                     ),
                     ListItem(
                         Index::Unordered("-"),
+                        "l2-h-2".to_string(),
                         vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
                         Some(Block::List(
                             vec![
                                 ListItem(
                                     Index::Unordered("-"),
+                                    "l2-1-h-3".to_string(),
                                     vec![
                                         Span::Text("l2,1 "),
                                         Span::Hash(Some(HashOp::GreaterThan), "H 3")
@@ -1887,6 +1916,7 @@ mod tests {
                                 ),
                                 ListItem(
                                     Index::Unordered("-"),
+                                    "l2-2-h-4".to_string(),
                                     vec![
                                         Span::Text("l2,2 "),
                                         Span::Hash(Some(HashOp::NotEqual), "H 4")
@@ -1894,18 +1924,29 @@ mod tests {
                                     Some(Block::List(
                                         vec![ListItem(
                                             Index::Unordered("-"),
+                                            "l2-2-1".to_string(),
                                             vec![Span::Text("l2,2,1")],
                                             None
                                         )],
                                         None
                                     ))
                                 ),
-                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    "l2-3".to_string(),
+                                    vec![Span::Text("l2,3")],
+                                    None
+                                )
                             ],
                             None
                         ))
                     ),
-                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                    ListItem(
+                        Index::Unordered("-"),
+                        "l3".to_string(),
+                        vec![Span::Text("l3")],
+                        None
+                    )
                 ],
                 None
             )]
@@ -1926,31 +1967,54 @@ mod tests {
 - l3"#),
             vec![Block::List(
                 vec![
-                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
+                        "l1".to_string(),
+                        vec![Span::Text("l1")],
+                        None
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        "l2".to_string(),
                         vec![Span::Text("l2")],
                         Some(Block::List(
                             vec![
-                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                                 ListItem(
                                     Index::Unordered("-"),
+                                    "l2-1".to_string(),
+                                    vec![Span::Text("l2,1")],
+                                    None
+                                ),
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    "l2-2".to_string(),
                                     vec![Span::Text("l2,2")],
                                     Some(Block::List(
                                         vec![ListItem(
                                             Index::Unordered("-"),
+                                            "l2-2-1".to_string(),
                                             vec![Span::Text("l2,2,1")],
                                             None
                                         )],
                                         None
                                     ))
                                 ),
-                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    "l2-3".to_string(),
+                                    vec![Span::Text("l2,3")],
+                                    None
+                                )
                             ],
                             Some(IndexMap::from([("k2", "v2")]))
                         ))
                     ),
-                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                    ListItem(
+                        Index::Unordered("-"),
+                        "l3".to_string(),
+                        vec![Span::Text("l3")],
+                        None
+                    )
                 ],
                 Some(IndexMap::from([("k1", "v1")]))
             )]
@@ -1963,31 +2027,54 @@ mod tests {
             ast("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
             vec![Block::List(
                 vec![
-                    ListItem(Index::Unordered("-"), vec![Span::Text("l1")], None),
                     ListItem(
                         Index::Unordered("-"),
+                        "l1".to_string(),
+                        vec![Span::Text("l1")],
+                        None
+                    ),
+                    ListItem(
+                        Index::Unordered("-"),
+                        "l2".to_string(),
                         vec![Span::Text("l2")],
                         Some(Block::List(
                             vec![
-                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,1")], None),
                                 ListItem(
                                     Index::Unordered("-"),
+                                    "l2-1".to_string(),
+                                    vec![Span::Text("l2,1")],
+                                    None
+                                ),
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    "l2-2".to_string(),
                                     vec![Span::Text("l2,2")],
                                     Some(Block::List(
                                         vec![ListItem(
                                             Index::Unordered("-"),
+                                            "l2-2-1".to_string(),
                                             vec![Span::Text("l2,2,1")],
                                             None
                                         )],
                                         None
                                     ))
                                 ),
-                                ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
+                                ListItem(
+                                    Index::Unordered("-"),
+                                    "l2-3".to_string(),
+                                    vec![Span::Text("l2,3")],
+                                    None
+                                )
                             ],
                             None
                         ))
                     ),
-                    ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
+                    ListItem(
+                        Index::Unordered("-"),
+                        "l3".to_string(),
+                        vec![Span::Text("l3")],
+                        None
+                    )
                 ],
                 None
             )]
@@ -2002,15 +2089,18 @@ mod tests {
                 vec![
                     ListItem(
                         Index::Ordered(Enumerator::Alpha("a")),
+                        "a".to_string(),
                         vec![Span::Text("l1")],
                         None
                     ),
                     ListItem(
                         Index::Ordered(Enumerator::Alpha("B")),
+                        "b".to_string(),
                         vec![Span::Text("l2")],
                         Some(Block::List(
                             vec![ListItem(
                                 Index::Ordered(Enumerator::Digit("1")),
+                                "1".to_string(),
                                 vec![Span::Text("l2,1")],
                                 None
                             )],
@@ -2029,13 +2119,20 @@ mod tests {
             ast(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
             vec![Block::List(
                 vec![
-                    ListItem(Index::Definition("ab"), vec![Span::Text("\n  alpha")], None),
+                    ListItem(
+                        Index::Definition("ab"),
+                        "ab".to_string(),
+                        vec![Span::Text("\n  alpha")],
+                        None
+                    ),
                     ListItem(
                         Index::Definition("12"),
+                        "12".to_string(),
                         vec![Span::Text("\n  digit")],
                         Some(Block::List(
                             vec![ListItem(
                                 Index::Definition("iv"),
+                                "iv".to_string(),
                                 vec![Span::Text("\n    roman")],
                                 None
                             )],
@@ -2054,16 +2151,19 @@ mod tests {
             ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
             vec![Block::Heading(
                 HLevel::H2,
+                "strong-heading".to_string(),
                 vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                 vec![Block::List(
                     vec![
                         ListItem(
                             Index::Unordered("-"),
+                            "l1-ha-1".to_string(),
                             vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
                             None
                         ),
                         ListItem(
                             Index::Unordered("-"),
+                            "l2-hb--1".to_string(),
                             vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
                             None
                         )
@@ -2103,6 +2203,7 @@ mod tests {
             ast("## [*strong heading\n  - l1*]\n  - l2"),
             vec![Block::Heading(
                 HLevel::H2,
+                "strong-heading-l1-l2".to_string(),
                 vec![
                     Span::Strong(vec![Span::Text("strong heading\n  - l1")], None),
                     Span::Text("\n  - l2")
@@ -2125,10 +2226,12 @@ mod tests {
             vec![Block::List(
                 vec![ListItem(
                     Index::Definition("ab"),
+                    "ab".to_string(),
                     vec![],
                     Some(Block::List(
                         vec![ListItem(
                             Index::Task("-", " "),
+                            "alpha".to_string(),
                             vec![Span::Text("alpha")],
                             None
                         )],
@@ -2147,6 +2250,7 @@ mod tests {
             doc,
             vec![Block::Heading(
                 HLevel::H1,
+                "h1".to_string(),
                 vec![Span::Text("h1")],
                 vec![
                     Block::Paragraph(
@@ -2160,6 +2264,7 @@ mod tests {
                     ),
                     Block::Heading(
                         HLevel::H2,
+                        "h2a".to_string(),
                         vec![Span::Text("h2a")],
                         vec![
                             Block::Paragraph(
@@ -2173,6 +2278,7 @@ mod tests {
                             ),
                             Block::Div(
                                 "d1",
+                                "d1".to_string(),
                                 vec![
                                     Block::Paragraph(
                                         vec![Span::Text("doc > h1 > h2a > d1")],
@@ -2185,6 +2291,7 @@ mod tests {
                                     ),
                                     Block::Heading(
                                         HLevel::H3,
+                                        "h3a".to_string(),
                                         vec![Span::Text("h3a")],
                                         vec![
                                             Block::Paragraph(
@@ -2198,6 +2305,7 @@ mod tests {
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
+                                                "h4a".to_string(),
                                                 vec![Span::Text("h4a")],
                                                 vec![Block::Paragraph(
                                                     vec![Span::Text(
@@ -2219,6 +2327,7 @@ mod tests {
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
+                                                "h4b".to_string(),
                                                 vec![Span::Text("h4b")],
                                                 vec![Block::Paragraph(
                                                     vec![Span::Text(
@@ -2265,6 +2374,7 @@ mod tests {
                             ),
                             Block::Heading(
                                 HLevel::H3,
+                                "h3b".to_string(),
                                 vec![Span::Text("h3b")],
                                 vec![
                                     Block::Paragraph(
@@ -2278,6 +2388,7 @@ mod tests {
                                     ),
                                     Block::Div(
                                         "d2",
+                                        "d2".to_string(),
                                         vec![
                                             Block::Paragraph(
                                                 vec![Span::Text("doc > h1 > h2a > h3b > d2")],
@@ -2290,6 +2401,7 @@ mod tests {
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
+                                                "h4b".to_string(),
                                                 vec![Span::Text("h4b")],
                                                 vec![Block::Paragraph(
                                                     vec![Span::Text(
@@ -2335,6 +2447,7 @@ mod tests {
                     ),
                     Block::Heading(
                         HLevel::H2,
+                        "h2a".to_string(),
                         vec![Span::Text("h2a")],
                         vec![
                             Block::Paragraph(
@@ -2462,8 +2575,9 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_link_span() {
         let doc = ast("# ![[loc|Level 0]]");
-        if let Block::Heading(_, ss, _, _, srs) = &doc[0] {
-            let ts = contents(&ss.to_vec());
+        if let Block::Heading(_, hi, ss, _, _, srs) = &doc[0] {
+            assert_eq!(*hi, "level-0".to_string());
+            let ts = contents(&ss);
             let hts = hashtags(ts);
             let s = htindex(&hts);
             assert_eq!(s, "level-0");
@@ -2485,8 +2599,9 @@ mod tests {
     #[test]
     fn test_hashtag_index_of_block_heading_negative_digit_only() {
         let doc = ast("# -33-32 31 -30");
-        if let Block::Heading(_, ss, _, _, srs) = &doc[0] {
-            let ts = contents(&ss.to_vec());
+        if let Block::Heading(_, hi, ss, _, _, srs) = &doc[0] {
+            assert_eq!(*hi, "--33-32-31--30".to_string());
+            let ts = contents(&ss);
             let hts = hashtags(ts);
             let s = htindex(&hts);
             assert_eq!(s, "--33-32-31--30");
