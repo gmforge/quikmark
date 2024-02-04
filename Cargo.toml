@@ -6,6 +6,7 @@ default-run = "qmast"
 
 [dependencies]
 color-eyre = "0.6.2"
+indexmap = "2.2.2"
 nom = "7.1.3"
 phf = { version = "0.11.2", features = ["macros"] }
 rstest = "0.18.2"

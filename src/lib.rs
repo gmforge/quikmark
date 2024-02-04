@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
@@ -8,7 +9,6 @@ use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
@@ -53,7 +53,7 @@ fn key_value(input: &str) -> IResult<&str, &str> {
     let (input, (v, _)) = consumed(many1(alt((esc_value, is_not(" }\t\n\r\\")))))(input)?;
     Ok((input, v))
 }
-fn attributes(input: &str) -> IResult<&str, HashMap<&str, &str>> {
+fn attributes(input: &str) -> IResult<&str, IndexMap<&str, &str>> {
     let (input, kvs) = delimited(
         tuple((tag("{"), space0)),
         separated_list1(
@@ -62,7 +62,7 @@ fn attributes(input: &str) -> IResult<&str, HashMap<&str, &str>> {
         ),
         tuple((space0, tag("}"))),
     )(input)?;
-    let mut h = HashMap::new();
+    let mut h = IndexMap::new();
     for (k, v) in kvs {
         // For security reasons only add first value of a key found.
         h.entry(k).or_insert(v);
@@ -113,19 +113,19 @@ pub enum Span<'a> {
         &'a str,
         bool,
         Vec<Span<'a>>,
-        Option<HashMap<&'a str, &'a str>>,
+        Option<IndexMap<&'a str, &'a str>>,
     ),
-    Verbatim(&'a str, Option<&'a str>, Option<HashMap<&'a str, &'a str>>),
-    Strong(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Emphasis(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Superscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Subscript(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Highlight(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Insert(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
-    Delete(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>),
+    Verbatim(&'a str, Option<&'a str>, Option<IndexMap<&'a str, &'a str>>),
+    Strong(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
+    Emphasis(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
+    Superscript(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
+    Subscript(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
+    Highlight(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
+    Insert(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
+    Delete(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
 }
 
-fn span_with_attributes<'a>(span: Span<'a>, kvs: HashMap<&'a str, &'a str>) -> Span<'a> {
+fn span_with_attributes<'a>(span: Span<'a>, kvs: IndexMap<&'a str, &'a str>) -> Span<'a> {
     match span {
         // Tags with Attributes
         Span::Link(loc, e, ss, _) => Span::Link(loc, e, ss, Some(kvs)),
@@ -394,7 +394,7 @@ fn locator(input: &str) -> IResult<&str, &str> {
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct SpanRefs {
-    tags: Option<HashMap<String, Vec<HashTag>>>,
+    tags: Option<IndexMap<String, Vec<HashTag>>>,
     filters: Option<Vec<HashFilter>>,
     embeds: Option<Vec<(String, String)>>,
 }
@@ -577,7 +577,7 @@ impl SpanRefs {
         // Constructed spans
         Vec<Span<'a>>,
         // Heading associated hashtags
-        //Option<HashMap<String, Vec<HashTag>>>,
+        //Option<IndexMap<String, Vec<HashTag>>>,
         // Heading associated hash filters
         //Option<HashFilter>,
         // Heading embedded links
@@ -585,7 +585,7 @@ impl SpanRefs {
     ) {
         let mut i = input;
         let mut ss = Vec::new();
-        //let mut hash_tags: HashMap<String, Vec<HashTag>> = HashMap::new();
+        //let mut hash_tags: IndexMap<String, Vec<HashTag>> = IndexMap::new();
         //let mut hash_filters: Vec<(String, HashOp, Vec<HashTag>)> = Vec::new();
         //let mut embedded_links: Option<Span<'a>> = None;
         // Loop through text until reach two newlines
@@ -676,7 +676,7 @@ impl SpanRefs {
                         } else if let Some(ref mut hts) = self.tags {
                             hts.insert(label, tags);
                         } else {
-                            let mut hts = HashMap::new();
+                            let mut hts = IndexMap::new();
                             hts.insert(label, tags);
                             self.tags = Some(hts);
                         }
@@ -741,7 +741,7 @@ pub enum Block<'a> {
     Div(
         &'a str,
         Vec<Block<'a>>,
-        Option<HashMap<&'a str, &'a str>>,
+        Option<IndexMap<&'a str, &'a str>>,
         SpanRefs,
     ),
     //Quote(Vec<Block<'a>>),
@@ -751,20 +751,20 @@ pub enum Block<'a> {
         Vec<Span<'a>>,
         // List of next level contained headings and other blocks
         //   Similar to Adjacency List Concept
-        // Option<HashMap<String, &'a Block<'a>>>,
+        // Option<IndexMap<String, &'a Block<'a>>>,
         Vec<Block<'a>>,
         // List of attributes
-        Option<HashMap<&'a str, &'a str>>,
+        Option<IndexMap<&'a str, &'a str>>,
         // List of associated hash tags
         // List of associated hash filters
         SpanRefs,
     ),
     // Code(format, [Span::Text], attributes)
-    Code(Option<&'a str>, &'a str, Option<HashMap<&'a str, &'a str>>),
+    Code(Option<&'a str>, &'a str, Option<IndexMap<&'a str, &'a str>>),
     // List(items, attributes)
-    List(Vec<ListItem<'a>>, Option<HashMap<&'a str, &'a str>>),
+    List(Vec<ListItem<'a>>, Option<IndexMap<&'a str, &'a str>>),
     //Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
-    Paragraph(Vec<Span<'a>>, Option<HashMap<&'a str, &'a str>>, SpanRefs),
+    Paragraph(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>, SpanRefs),
 }
 
 // H1      = { "#" }
@@ -978,7 +978,7 @@ fn list_block<'a>(
     input: &'a str,
     depth: &'a str,
     index: Index<'a>,
-    attrs: Option<HashMap<&'a str, &'a str>>,
+    attrs: Option<IndexMap<&'a str, &'a str>>,
     span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, Option<Block<'a>>> {
     let mut lis = Vec::new();
@@ -1174,7 +1174,7 @@ pub struct Document<'a> {
     // Block levle hash tags, filter tags, and embedded links
     pub span_refs: SpanRefs,
     // References to a list of headings within the document
-    // pub head_refs: Option<HashMap<&'a str, Block<'a>>>,
+    // pub head_refs: Option<IndexMap<&'a str, Block<'a>>>,
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
@@ -1377,7 +1377,7 @@ mod tests {
                     Span::Verbatim(
                         "ver```batim",
                         None,
-                        Some(HashMap::from([("format", "fmt")]))
+                        Some(IndexMap::from([("format", "fmt")]))
                     ),
                     Span::Text(" right")
                 ],
@@ -1478,7 +1478,7 @@ mod tests {
                 ],
                 None,
                 SpanRefs {
-                    tags: Some(HashMap::from([(
+                    tags: Some(IndexMap::from([(
                         "hash".to_string(),
                         vec![
                             HashTag::Str("hash".to_string()),
@@ -1607,7 +1607,7 @@ mod tests {
                         "LOC",
                         true,
                         vec![],
-                        Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
+                        Some(IndexMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     )
                 ],
                 None,
@@ -1632,7 +1632,7 @@ mod tests {
                         "loc",
                         false,
                         vec![],
-                        Some(HashMap::from([("k1", "v1",), ("k_2", "v_2")]))
+                        Some(IndexMap::from([("k1", "v1",), ("k_2", "v_2")]))
                     ),
                 ],
                 None,
@@ -1657,7 +1657,7 @@ mod tests {
                         "loc",
                         false,
                         vec![],
-                        Some(HashMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])),
+                        Some(IndexMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])),
                     )
                 ],
                 None,
@@ -1787,7 +1787,7 @@ mod tests {
                 vec![Block::Code(
                     Some("fmt"),
                     "line1\n````\nline3",
-                    Some(HashMap::from([("format", "code")]))
+                    Some(IndexMap::from([("format", "code")]))
                 )],
                 None,
                 SpanRefs {
@@ -1807,7 +1807,7 @@ mod tests {
                 "div1",
                 vec![Block::Paragraph(
                     vec![Span::Text("test paragraph")],
-                    Some(HashMap::from([("format", "code")])),
+                    Some(IndexMap::from([("format", "code")])),
                     SpanRefs {
                         tags: None,
                         filters: None,
@@ -1832,7 +1832,7 @@ mod tests {
         assert_eq!(
             doc.span_refs,
             SpanRefs {
-                tags: Some(HashMap::from([(
+                tags: Some(IndexMap::from([(
                     "h".to_string(),
                     vec![
                         HashTag::Str("h".to_string()),
@@ -1947,12 +1947,12 @@ mod tests {
                                 ),
                                 ListItem(Index::Unordered("-"), vec![Span::Text("l2,3")], None)
                             ],
-                            Some(HashMap::from([("k2", "v2")]))
+                            Some(IndexMap::from([("k2", "v2")]))
                         ))
                     ),
                     ListItem(Index::Unordered("-"), vec![Span::Text("l3")], None)
                 ],
-                Some(HashMap::from([("k1", "v1")]))
+                Some(IndexMap::from([("k1", "v1")]))
             )]
         );
     }
@@ -2072,7 +2072,7 @@ mod tests {
                 )],
                 None,
                 SpanRefs {
-                    tags: Some(HashMap::from([
+                    tags: Some(IndexMap::from([
                         (
                             "ha".to_string(),
                             vec![
@@ -2406,7 +2406,7 @@ mod tests {
                 ],
                 None,
                 SpanRefs {
-                    tags: Some(HashMap::from([(
+                    tags: Some(IndexMap::from([(
                         "level".to_string(),
                         vec![
                             HashTag::Str("level".to_string()),
