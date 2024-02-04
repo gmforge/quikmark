@@ -20,6 +20,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let doc = document(&content)?;
     docs.cache.push((Rc::clone(&content), doc));
     println!("{:?}", docs.cache[0].1.blocks);
-    println!("{:?}", content);
+    //println!("{:?}", content);
     Ok(())
 }

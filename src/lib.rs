@@ -220,9 +220,9 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>) -> Vec<&'a str> {
         })
 }
 
-// Hashtag Indexes are used to index the hashtag minus any formatting tags
+// Hash tag labels are used to index the hash tags minus any span formatting,
 // nor numerical values, so that ranges of hashtags may be compared.
-pub fn htindex(hts: &Vec<HashTag>) -> String {
+pub fn htlabel(hts: &Vec<HashTag>) -> String {
     let mut s = String::new();
     let mut space = false;
     for ht in hts {
@@ -245,8 +245,8 @@ pub fn htindex(hts: &Vec<HashTag>) -> String {
     s
 }
 
-// Hashtag label are used to compare content minus any formatting tags
-pub fn htlabel(hts: &Vec<HashTag>) -> String {
+// Hash tag indexes are used to compare content minus any span formatting.
+pub fn htindex(hts: &Vec<HashTag>) -> String {
     let mut s = String::new();
     for ht in hts {
         match ht {
@@ -539,7 +539,7 @@ impl SpanRefs {
         let embed = e.is_some();
         let (i, ss) = self.spans(i, Some("]]"), None);
         if embed {
-            let label = htlabel(&hashtags(contents(&ss)));
+            let label = htindex(&hashtags(contents(&ss)));
             let link = l.to_string();
             if let Some(es) = &mut self.embeds {
                 es.push((label, link));
@@ -661,19 +661,23 @@ impl SpanRefs {
                     Span::Hash(op, ht) => {
                         ss.push(s);
                         let tags = hashtags(vec![ht]);
-                        let index = htindex(&tags);
+                        let label = htlabel(&tags);
                         if let Some(op) = op {
-                            let hf = HashFilter { index, op, tags };
+                            let hf = HashFilter {
+                                index: label,
+                                op,
+                                tags,
+                            };
                             if self.filters.is_some() {
                                 self.filters.as_mut().map(move |v| v.push(hf));
                             } else {
                                 self.filters = Some(vec![hf]);
                             }
                         } else if let Some(ref mut hts) = self.tags {
-                            hts.insert(index, tags);
+                            hts.insert(label, tags);
                         } else {
                             let mut hts = HashMap::new();
-                            hts.insert(index, tags);
+                            hts.insert(label, tags);
                             self.tags = Some(hts);
                         }
                     }
@@ -2443,9 +2447,9 @@ mod tests {
                     HashTag::Num(1)
                 ]
             );
-            let s = htlabel(&hts);
-            assert_eq!(s, "left-text-32--32v-ab-right-level-1");
             let s = htindex(&hts);
+            assert_eq!(s, "left-text-32--32v-ab-right-level-1");
+            let s = htlabel(&hts);
             assert_eq!(s, "left-text-v-ab-right-level");
         } else {
             panic!(
@@ -2461,9 +2465,9 @@ mod tests {
         if let Block::Heading(_, ss, _, _, srs) = &doc[0] {
             let ts = contents(&ss.to_vec());
             let hts = hashtags(ts);
-            let s = htlabel(&hts);
-            assert_eq!(s, "level-0");
             let s = htindex(&hts);
+            assert_eq!(s, "level-0");
+            let s = htlabel(&hts);
             assert_eq!(s, "level");
             assert_eq!(
                 *srs,
@@ -2484,9 +2488,9 @@ mod tests {
         if let Block::Heading(_, ss, _, _, srs) = &doc[0] {
             let ts = contents(&ss.to_vec());
             let hts = hashtags(ts);
-            let s = htlabel(&hts);
-            assert_eq!(s, "--33-32-31--30");
             let s = htindex(&hts);
+            assert_eq!(s, "--33-32-31--30");
+            let s = htlabel(&hts);
             assert_eq!(s, "-");
             assert_eq!(
                 *srs,
