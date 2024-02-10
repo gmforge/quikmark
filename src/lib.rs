@@ -191,18 +191,41 @@ impl fmt::Display for HashTag {
     }
 }
 
+fn number(input: &str) -> IResult<&str, &str> {
+    let (i, (c, _)) = consumed(tuple((opt(tag("-")), digit1)))(input)?;
+    Ok((i, c))
+}
+
+fn single_non_number(input: &str) -> IResult<&str, &str> {
+    let (i, (c, _)) = consumed(anychar)(input)?;
+    Ok((i, c))
+}
+
+fn filter_out_numbers(input: &str) -> IResult<&str, Vec<&str>> {
+    let (i, v) = many0(preceded(opt(number), single_non_number))(input)?;
+    return Ok((i, v));
+}
+
 // Contents concatenates the text within the nested vectors of spans
-pub fn contents<'a>(outer: &Vec<Span<'a>>) -> Vec<&'a str> {
+pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
     outer
         .iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Verbatim(t, _, _) | Span::Hash(_, t) => vec![*t],
+                Span::Text(t) | Span::Verbatim(t, _, _) => vec![*t],
+                Span::Hash(_, t) => {
+                    // Filter out digits with associated negative sign
+                    if let (true, Ok((_, vs))) = (label, filter_out_numbers(t)) {
+                        vs
+                    } else {
+                        vec![]
+                    }
+                }
                 Span::Link(s, _, vs, _) => {
                     if vs.is_empty() {
                         vec![*s]
                     } else {
-                        contents(&vs)
+                        contents(&vs, label)
                     }
                 }
                 Span::Strong(vs, _)
@@ -211,7 +234,7 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>) -> Vec<&'a str> {
                 | Span::Subscript(vs, _)
                 | Span::Highlight(vs, _)
                 | Span::Insert(vs, _)
-                | Span::Delete(vs, _) => contents(&vs),
+                | Span::Delete(vs, _) => contents(&vs, label),
                 Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![*s],
                 Span::EOM => vec![],
             };
@@ -263,8 +286,8 @@ pub fn htindex(hts: &Vec<HashTag>) -> String {
 
 // Tags turns contents into hash tags type that may be used for ordering
 // anchor strings for referencing/indexing, or filtering.
-pub fn hashtags(contents: Vec<&str>) -> Vec<HashTag> {
-    let (mut hts, ht) = contents
+pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
+    let (mut hts, ht) = input
         .iter()
         .fold((Vec::new(), None), |(mut hts, mut ht), c| {
             let mut i = *c;
@@ -539,7 +562,7 @@ impl SpanRefs {
         let embed = e.is_some();
         let (i, ss) = self.spans(i, Some("]]"), None);
         if embed {
-            let label = htindex(&hashtags(contents(&ss)));
+            let label = htindex(&hashtags(contents(&ss, false)));
             let link = l.to_string();
             if let Some(es) = &mut self.embeds {
                 es.push((label, link));
@@ -1056,7 +1079,7 @@ fn list_item<'a>(
         Index::Ordered(Enumerator::Alpha(s))
         | Index::Ordered(Enumerator::Digit(s))
         | Index::Definition(s) => htindex(&hashtags(vec![s])),
-        Index::Unordered(_) | Index::Task(_, _) => htindex(&hashtags(contents(&ss))),
+        Index::Unordered(_) | Index::Task(_, _) => htindex(&hashtags(contents(&ss, true))),
     };
     Ok((input, ListItem(index, list_item_index, ss, slb)))
 }
@@ -1155,7 +1178,7 @@ fn blocks<'a>(
             let (input, head_spans) = span_refs.spans(input, None, Some(false));
             let (input, head_blocks) = blocks(input, divs, Some(hl), &mut span_refs)?;
             i = input;
-            let head_index = htindex(&hashtags(contents(&head_spans)));
+            let head_index = htindex(&hashtags(contents(&head_spans, false)));
             bs.push(Block::Heading(
                 hl,
                 head_index,
@@ -1895,19 +1918,19 @@ mod tests {
                 vec![
                     ListItem(
                         Index::Unordered("-"),
-                        "l1-h-1".to_string(),
+                        "l1-h".to_string(),
                         vec![Span::Text("l1 "), Span::Hash(None, "H 1")],
                         None
                     ),
                     ListItem(
                         Index::Unordered("-"),
-                        "l2-h-2".to_string(),
+                        "l2-h".to_string(),
                         vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
                         Some(Block::List(
                             vec![
                                 ListItem(
                                     Index::Unordered("-"),
-                                    "l2-1-h-3".to_string(),
+                                    "l2-1-h".to_string(),
                                     vec![
                                         Span::Text("l2,1 "),
                                         Span::Hash(Some(HashOp::GreaterThan), "H 3")
@@ -1916,7 +1939,7 @@ mod tests {
                                 ),
                                 ListItem(
                                     Index::Unordered("-"),
-                                    "l2-2-h-4".to_string(),
+                                    "l2-2-h".to_string(),
                                     vec![
                                         Span::Text("l2,2 "),
                                         Span::Hash(Some(HashOp::NotEqual), "H 4")
@@ -2157,13 +2180,13 @@ mod tests {
                     vec![
                         ListItem(
                             Index::Unordered("-"),
-                            "l1-ha-1".to_string(),
+                            "l1-ha".to_string(),
                             vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
                             None
                         ),
                         ListItem(
                             Index::Unordered("-"),
-                            "l2-hb--1".to_string(),
+                            "l2-hb".to_string(),
                             vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
                             None
                         )
@@ -2533,10 +2556,13 @@ mod tests {
             )]
         );
         if let Block::Paragraph(ss, _, _srs) = &doc[0] {
-            let ts = contents(&ss.to_vec());
+            let ts = contents(&ss, true);
             assert_eq!(
                 ts,
-                vec!["Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "Level 1", "\n"]
+                vec![
+                    "Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "L", "e", "v",
+                    "e", "l", " ", "\n"
+                ]
             );
             let hts = hashtags(ts);
             assert_eq!(
@@ -2556,12 +2582,10 @@ mod tests {
                     HashTag::Str("right".to_string()),
                     HashTag::Space,
                     HashTag::Str("level".to_string()),
-                    HashTag::Space,
-                    HashTag::Num(1)
                 ]
             );
             let s = htindex(&hts);
-            assert_eq!(s, "left-text-32--32v-ab-right-level-1");
+            assert_eq!(s, "left-text-32--32v-ab-right-level");
             let s = htlabel(&hts);
             assert_eq!(s, "left-text-v-ab-right-level");
         } else {
@@ -2577,7 +2601,7 @@ mod tests {
         let doc = ast("# ![[loc|Level 0]]");
         if let Block::Heading(_, hi, ss, _, _, srs) = &doc[0] {
             assert_eq!(*hi, "level-0".to_string());
-            let ts = contents(&ss);
+            let ts = contents(&ss, false);
             let hts = hashtags(ts);
             let s = htindex(&hts);
             assert_eq!(s, "level-0");
@@ -2601,7 +2625,7 @@ mod tests {
         let doc = ast("# -33-32 31 -30");
         if let Block::Heading(_, hi, ss, _, _, srs) = &doc[0] {
             assert_eq!(*hi, "--33-32-31--30".to_string());
-            let ts = contents(&ss);
+            let ts = contents(&ss, false);
             let hts = hashtags(ts);
             let s = htindex(&hts);
             assert_eq!(s, "--33-32-31--30");
