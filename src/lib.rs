@@ -749,6 +749,21 @@ impl SpanRefs {
 
 // BLOCKS
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum Id {
+    Uid(usize),
+    Label(String),
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum Label<'a> {
+    Div(&'a str, Option<usize>),
+    Heading(HLevel, String, Option<usize>),
+    List(Id, Option<usize>),
+    Code(Id),
+    Para(Id),
+}
+
 // Block = {
 //     Div
 //   | Quote
@@ -775,7 +790,7 @@ pub enum Block<'a> {
     //Quote(Vec<Block<'a>>),
     Heading(
         // Heading level
-        HLevel<'a>,
+        HLevel,
         // Index
         String,
         // Contained Spans
@@ -788,12 +803,16 @@ pub enum Block<'a> {
         // Relative hash tags, hash filters, and embedded links
         SpanRefs,
     ),
-    // Code(format, [Span::Text], attributes)
-    Code(Option<&'a str>, &'a str, Option<IndexMap<&'a str, &'a str>>),
     // List(items, attributes)
     List(Vec<ListItem<'a>>, Option<IndexMap<&'a str, &'a str>>),
+
+    // Block Types with no children
+
+    // Code(format, [Span::Text], attributes)
+    Code(Option<&'a str>, &'a str, Option<IndexMap<&'a str, &'a str>>),
     //Table(Vec<Span<'a>>, Option<Vec<Align>>, Vec<Vec<Span<'a>>>),
-    Paragraph(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>, SpanRefs),
+    // Paragraph(spans, attributes)
+    Paragraph(Vec<Span<'a>>, Option<IndexMap<&'a str, &'a str>>),
 }
 
 // H1      = { "#" }
@@ -811,9 +830,8 @@ static HLEVEL: phf::Map<&'static str, HLevel> = phf_map! {
     "######" => HLevel::H6,
 };
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Copy)]
-pub enum HLevel<'a> {
-    DIV(&'a str),
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Copy, Hash)]
+pub enum HLevel {
     H1,
     H2,
     H3,
@@ -822,9 +840,8 @@ pub enum HLevel<'a> {
     H6,
 }
 
-fn div_start(input: &str) -> IResult<&str, HLevel> {
-    let (input, name) = preceded(tuple((tag(":::"), space1)), field)(input)?;
-    Ok((input, HLevel::DIV(name)))
+fn div_start(input: &str) -> IResult<&str, &str> {
+    preceded(tuple((tag(":::"), space1)), field)(input)
 }
 
 fn div_close(input: &str) -> IResult<&str, bool> {
@@ -894,7 +911,7 @@ pub enum Index<'a> {
     // (e), e), e.
     Ordered(Enumerator<'a>),
     // - [ ], + [ ], * [ ]
-    // contents may be a checkbox indicated with space or x,
+    // contents may be a checkbox indicated with space, x, or X
     // or input field indicated with digit1 or ratio (digit1:digit1)
     Task(&'a str, &'a str),
     // -, +, *
@@ -1124,10 +1141,9 @@ pub enum Align {
 
 // Paragraph = { (NEWLINE+ | SOI) ~ Span+ ~ &(NEWLINE | EOI) }
 #[allow(clippy::unnecessary_wraps)]
-fn paragraph(input: &str) -> IResult<&str, Block<'_>> {
-    let mut span_refs = SpanRefs::default();
+fn paragraph<'a>(input: &'a str, span_refs: &mut SpanRefs) -> IResult<&'a str, Block<'a>> {
     let (i, ss) = span_refs.spans(input, None, None);
-    Ok((i, Block::Paragraph(ss, None, span_refs)))
+    Ok((i, Block::Paragraph(ss, None)))
 }
 
 // Div = {
@@ -1160,7 +1176,7 @@ fn blocks<'a>(
         }
         let (input, attrs) = opt(terminated(attributes, line_ending))(i)?;
         i = input;
-        if let Ok((input, Some(HLevel::DIV(name)))) = opt(div_start)(i) {
+        if let Ok((input, Some(name))) = opt(div_start)(i) {
             let mut span_refs = SpanRefs::default();
             let (input, div_bs) = blocks(input, true, refs, &mut span_refs)?;
             let (input, _) = opt(div_close)(input)?;
@@ -1190,19 +1206,12 @@ fn blocks<'a>(
         } else if let Ok((input, Block::List(ls, _))) = list(i, parent_span_refs) {
             i = input;
             bs.push(Block::List(ls, attrs));
-        } else {
-            let (input, b) = match alt((code, paragraph))(i)? {
-                (i, Block::Code(f, c, _)) => (i, Block::Code(f, c, attrs)),
-                (i, Block::Paragraph(ss, _, srs)) => (i, Block::Paragraph(ss, attrs, srs)),
-                _ => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Alt,
-                    )))
-                }
-            };
+        } else if let Ok((input, Block::Code(f, c, _))) = code(i) {
             i = input;
-            bs.push(b);
+            bs.push(Block::Code(f, c, attrs));
+        } else if let (input, Block::Paragraph(ss, _)) = paragraph(i, parent_span_refs)? {
+            i = input;
+            bs.push(Block::Paragraph(ss, attrs));
         }
     }
     Ok((i, bs))
@@ -1253,11 +1262,6 @@ mod tests {
             vec![Block::Paragraph(
                 vec![Span::Text("line"), Span::LineBreak("\n")],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1269,11 +1273,6 @@ mod tests {
             vec![Block::Paragraph(
                 vec![Span::Text("left"), Span::NBWS(" "), Span::Text("right")],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1289,11 +1288,6 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1312,11 +1306,6 @@ mod tests {
                     Span::Text(" r")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1339,11 +1328,6 @@ mod tests {
                     Span::Text(" r")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1359,11 +1343,6 @@ mod tests {
                     Span::Text(" r")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1379,11 +1358,6 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1399,11 +1373,6 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1423,11 +1392,6 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1443,11 +1407,6 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1456,15 +1415,7 @@ mod tests {
     fn test_block_paragraph_hash_empty_eom() {
         assert_eq!(
             ast("left #"),
-            vec![Block::Paragraph(
-                vec![Span::Text("left #")],
-                None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None
-                },
-            )]
+            vec![Block::Paragraph(vec![Span::Text("left #")], None,)]
         );
     }
 
@@ -1472,45 +1423,57 @@ mod tests {
     fn test_block_paragraph_hash_empty_space() {
         assert_eq!(
             ast("left # "),
-            vec![Block::Paragraph(
-                vec![Span::Text("left # ")],
-                None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None
-                },
-            )]
+            vec![Block::Paragraph(vec![Span::Text("left # ")], None,)]
         );
     }
 
     #[test]
     fn test_block_paragraph_hash_field_eom() {
+        let doc = document("left !#Hash").unwrap();
         assert_eq!(
-            ast("left !#Hash"),
+            doc.span_refs,
+            SpanRefs {
+                tags: None,
+                filters: Some(vec![HashFilter {
+                    index: "hash".to_string(),
+                    op: HashOp::NotEqual,
+                    tags: vec![HashTag::Str("hash".to_string())],
+                }]),
+                embeds: None
+            }
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
                     Span::Hash(Some(HashOp::NotEqual), "Hash")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: Some(vec![HashFilter {
-                        index: "hash".to_string(),
-                        op: HashOp::NotEqual,
-                        tags: vec![HashTag::Str("hash".to_string())],
-                    }]),
-                    embeds: None
-                },
             )]
         );
     }
 
     #[test]
     fn test_block_paragraph_hash_field_newline() {
+        let doc = document("left #hash 1 \nnext line").unwrap();
         assert_eq!(
-            ast("left #hash 1 \nnext line"),
+            doc.span_refs,
+            SpanRefs {
+                tags: Some(IndexMap::from([(
+                    "hash".to_string(),
+                    vec![
+                        HashTag::Str("hash".to_string()),
+                        HashTag::Space,
+                        HashTag::Num(1)
+                    ]
+                )])),
+                filters: None,
+                embeds: None
+            },
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
@@ -1518,42 +1481,43 @@ mod tests {
                     Span::Text("\nnext line")
                 ],
                 None,
-                SpanRefs {
-                    tags: Some(IndexMap::from([(
-                        "hash".to_string(),
-                        vec![
-                            HashTag::Str("hash".to_string()),
-                            HashTag::Space,
-                            HashTag::Num(1)
-                        ]
-                    )])),
-                    filters: None,
-                    embeds: None
-                },
             )]
         );
     }
 
     #[test]
     fn test_block_paragraph_link_location() {
+        let doc = document("left ![[loc]]").unwrap();
         assert_eq!(
-            ast("left ![[loc]]"),
+            doc.span_refs,
+            SpanRefs {
+                tags: None,
+                filters: None,
+                embeds: Some(vec![("-".to_string(), "loc".to_string())]),
+            },
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![Span::Text("left "), Span::Link("loc", true, vec![], None)],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: Some(vec![("-".to_string(), "loc".to_string())]),
-                },
             )]
         );
     }
 
     #[test]
     fn test_block_paragraph_link_with_location_and_text_super() {
+        let doc = document("left [[loc|text^SUP^]] right").unwrap();
         assert_eq!(
-            ast("left [[loc|text^SUP^]] right"),
+            doc.span_refs,
+            SpanRefs {
+                tags: None,
+                filters: None,
+                embeds: None,
+            },
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
@@ -1569,19 +1533,23 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
 
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
+        let doc = document("left ![[Loc|text `Verbatim`]] right").unwrap();
         assert_eq!(
-            ast("left ![[Loc|text `Verbatim`]] right"),
+            doc.span_refs,
+            SpanRefs {
+                tags: None,
+                filters: None,
+                embeds: Some(vec![("text-verbatim".to_string(), "Loc".to_string())]),
+            },
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
@@ -1594,11 +1562,6 @@ mod tests {
                     Span::Text(" right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: Some(vec![("text-verbatim".to_string(), "Loc".to_string())]),
-                },
             )]
         );
     }
@@ -1627,20 +1590,23 @@ mod tests {
                   Span::Text(" text-right")
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
 
     #[test]
     fn test_block_paragraph_link_attributes() {
-        let doc = ast("left ![[LOC]]{k1=v1 k_2=v_2}");
+        let doc = document("left ![[LOC]]{k1=v1 k_2=v_2}").unwrap();
         assert_eq!(
-            doc,
+            doc.span_refs,
+            SpanRefs {
+                tags: None,
+                filters: None,
+                embeds: Some(vec![("-".to_string(), "LOC".to_string())]),
+            },
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("left "),
@@ -1652,11 +1618,6 @@ mod tests {
                     )
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: Some(vec![("-".to_string(), "LOC".to_string())]),
-                },
             )]
         );
     }
@@ -1677,11 +1638,6 @@ mod tests {
                     ),
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1702,11 +1658,6 @@ mod tests {
                     )
                 ],
                 None,
-                SpanRefs {
-                    tags: None,
-                    filters: None,
-                    embeds: None,
-                },
             )]
         );
     }
@@ -1741,15 +1692,7 @@ mod tests {
                     Span::Text("header\nnext line "),
                     Span::Strong(vec![Span::Text("strong")], None)
                 ],
-                vec![Block::Paragraph(
-                    vec![Span::Text("new paragraph")],
-                    None,
-                    SpanRefs {
-                        tags: None,
-                        filters: None,
-                        embeds: None
-                    }
-                )],
+                vec![Block::Paragraph(vec![Span::Text("new paragraph")], None,)],
                 None,
                 SpanRefs {
                     tags: None,
@@ -1774,15 +1717,7 @@ mod tests {
                     vec![Block::Div(
                         "div2",
                         "div2".to_string(),
-                        vec![Block::Paragraph(
-                            vec![Span::Text("  line")],
-                            None,
-                            SpanRefs {
-                                tags: None,
-                                filters: None,
-                                embeds: None
-                            }
-                        )],
+                        vec![Block::Paragraph(vec![Span::Text("  line")], None,)],
                         None,
                         SpanRefs {
                             tags: None,
@@ -1849,19 +1784,15 @@ mod tests {
 
     #[test]
     fn test_block_div_para_attrs() {
+        let doc = document("::: div1\n\n{format=code}\ntest paragraph").unwrap();
         assert_eq!(
-            ast("::: div1\n\n{format=code}\ntest paragraph"),
+            doc.blocks,
             vec![Block::Div(
                 "div1",
                 "div1".to_string(),
                 vec![Block::Paragraph(
                     vec![Span::Text("test paragraph")],
                     Some(IndexMap::from([("format", "code")])),
-                    SpanRefs {
-                        tags: None,
-                        filters: None,
-                        embeds: None,
-                    },
                 )],
                 None,
                 SpanRefs {
@@ -2276,42 +2207,18 @@ mod tests {
                 "h1".to_string(),
                 vec![Span::Text("h1")],
                 vec![
-                    Block::Paragraph(
-                        vec![Span::Text("doc > h1")],
-                        None,
-                        SpanRefs {
-                            tags: None,
-                            filters: None,
-                            embeds: None
-                        }
-                    ),
+                    Block::Paragraph(vec![Span::Text("doc > h1")], None,),
                     Block::Heading(
                         HLevel::H2,
                         "h2a".to_string(),
                         vec![Span::Text("h2a")],
                         vec![
-                            Block::Paragraph(
-                                vec![Span::Text("doc > h1 > h2a")],
-                                None,
-                                SpanRefs {
-                                    tags: None,
-                                    filters: None,
-                                    embeds: None
-                                }
-                            ),
+                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None,),
                             Block::Div(
                                 "d1",
                                 "d1".to_string(),
                                 vec![
-                                    Block::Paragraph(
-                                        vec![Span::Text("doc > h1 > h2a > d1")],
-                                        None,
-                                        SpanRefs {
-                                            tags: None,
-                                            filters: None,
-                                            embeds: None
-                                        }
-                                    ),
+                                    Block::Paragraph(vec![Span::Text("doc > h1 > h2a > d1")], None,),
                                     Block::Heading(
                                         HLevel::H3,
                                         "h3a".to_string(),
@@ -2320,11 +2227,6 @@ mod tests {
                                             Block::Paragraph(
                                                 vec![Span::Text("doc > h1 > h2a > d1 > h3a")],
                                                 None,
-                                                SpanRefs {
-                                                    tags: None,
-                                                    filters: None,
-                                                    embeds: None
-                                                }
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
@@ -2335,11 +2237,6 @@ mod tests {
                                                         "doc > h1 > h2a > d1 > h3a > h4a"
                                                     )],
                                                     None,
-                                                    SpanRefs {
-                                                        tags: None,
-                                                        filters: None,
-                                                        embeds: None
-                                                    }
                                                 )],
                                                 None,
                                                 SpanRefs {
@@ -2357,11 +2254,6 @@ mod tests {
                                                         "doc > h1 > h2a > d1 > h3a > h4b"
                                                     )],
                                                     None,
-                                                    SpanRefs {
-                                                        tags: None,
-                                                        filters: None,
-                                                        embeds: None
-                                                    }
                                                 )],
                                                 None,
                                                 SpanRefs {
@@ -2386,15 +2278,7 @@ mod tests {
                                     embeds: None
                                 }
                             ),
-                            Block::Paragraph(
-                                vec![Span::Text("doc > h1 > h2a")],
-                                None,
-                                SpanRefs {
-                                    tags: None,
-                                    filters: None,
-                                    embeds: None
-                                }
-                            ),
+                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None,),
                             Block::Heading(
                                 HLevel::H3,
                                 "h3b".to_string(),
@@ -2403,11 +2287,6 @@ mod tests {
                                     Block::Paragraph(
                                         vec![Span::Text("doc > h1 > h2a > h3b")],
                                         None,
-                                        SpanRefs {
-                                            tags: None,
-                                            filters: None,
-                                            embeds: None,
-                                        }
                                     ),
                                     Block::Div(
                                         "d2",
@@ -2416,11 +2295,6 @@ mod tests {
                                             Block::Paragraph(
                                                 vec![Span::Text("doc > h1 > h2a > h3b > d2")],
                                                 None,
-                                                SpanRefs {
-                                                    tags: None,
-                                                    filters: None,
-                                                    embeds: None,
-                                                }
                                             ),
                                             Block::Heading(
                                                 HLevel::H4,
@@ -2431,11 +2305,6 @@ mod tests {
                                                         "doc > h1 > h2a > h3b > d2 > h4b"
                                                     )],
                                                     None,
-                                                    SpanRefs {
-                                                        tags: None,
-                                                        filters: None,
-                                                        embeds: None,
-                                                    }
                                                 )],
                                                 None,
                                                 SpanRefs {
@@ -2473,23 +2342,10 @@ mod tests {
                         "h2a".to_string(),
                         vec![Span::Text("h2a")],
                         vec![
-                            Block::Paragraph(
-                                vec![Span::Text("doc > h1 > h2b")],
-                                None,
-                                SpanRefs {
-                                    tags: None,
-                                    filters: None,
-                                    embeds: None
-                                }
-                            ),
+                            Block::Paragraph(vec![Span::Text("doc > h1 > h2b")], None,),
                             Block::Paragraph(
                                 vec![Span::Text(":::\ndoc > h1 > h2b // No change\n")],
                                 None,
-                                SpanRefs {
-                                    tags: None,
-                                    filters: None,
-                                    embeds: None
-                                }
                             )
                         ],
                         None,
@@ -2512,9 +2368,25 @@ mod tests {
 
     #[test]
     fn test_content_and_hashtag_index_of_block_paragraph_link_with_location_and_span() {
-        let doc = ast("Left \\\n![[loC|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n");
+        let doc =
+            document("Left \\\n![[loC|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n").unwrap();
         assert_eq!(
-            doc,
+            doc.span_refs,
+            SpanRefs {
+                tags: Some(IndexMap::from([(
+                    "level".to_string(),
+                    vec![
+                        HashTag::Str("level".to_string()),
+                        HashTag::Space,
+                        HashTag::Num(1)
+                    ]
+                )])),
+                filters: None,
+                embeds: Some(vec![("text-32--32v-ab".to_string(), "loC".to_string())])
+            }
+        );
+        assert_eq!(
+            doc.blocks,
             vec![Block::Paragraph(
                 vec![
                     Span::Text("Left "),
@@ -2541,21 +2413,9 @@ mod tests {
                     Span::Text("\n")
                 ],
                 None,
-                SpanRefs {
-                    tags: Some(IndexMap::from([(
-                        "level".to_string(),
-                        vec![
-                            HashTag::Str("level".to_string()),
-                            HashTag::Space,
-                            HashTag::Num(1)
-                        ]
-                    )])),
-                    filters: None,
-                    embeds: Some(vec![("text-32--32v-ab".to_string(), "loC".to_string())])
-                }
             )]
         );
-        if let Block::Paragraph(ss, _, _srs) = &doc[0] {
+        if let Block::Paragraph(ss, _) = &doc.blocks[0] {
             let ts = contents(&ss, true);
             assert_eq!(
                 ts,
