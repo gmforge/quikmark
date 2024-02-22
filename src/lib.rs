@@ -2043,68 +2043,113 @@ mod tests {
                 embeds: None,
             }
         );
-        //        assert_eq!(
-        //            doc.blocks,
-        //            vec![Block::List(
-        //                vec![
-        //                    ListItem(
-        //                        Index::Unordered("-"),
-        //                        "l1-h".to_string(),
-        //                        vec![Span::Text("l1 "), Span::Hash(None, "H 1")],
-        //                        None
-        //                    ),
-        //                    ListItem(
-        //                        Index::Unordered("-"),
-        //                        "l2-h".to_string(),
-        //                        vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
-        //                        Some(Block::List(
-        //                            vec![
-        //                                ListItem(
-        //                                    Index::Unordered("-"),
-        //                                    "l2-1-h".to_string(),
-        //                                    vec![
-        //                                        Span::Text("l2,1 "),
-        //                                        Span::Hash(Some(HashOp::GreaterThan), "H 3")
-        //                                    ],
-        //                                    None
-        //                                ),
-        //                                ListItem(
-        //                                    Index::Unordered("-"),
-        //                                    "l2-2-h".to_string(),
-        //                                    vec![
-        //                                        Span::Text("l2,2 "),
-        //                                        Span::Hash(Some(HashOp::NotEqual), "H 4")
-        //                                    ],
-        //                                    Some(Block::List(
-        //                                        vec![ListItem(
-        //                                            Index::Unordered("-"),
-        //                                            "l2-2-1".to_string(),
-        //                                            vec![Span::Text("l2,2,1")],
-        //                                            None
-        //                                        )],
-        //                                        None
-        //                                    ))
-        //                                ),
-        //                                ListItem(
-        //                                    Index::Unordered("-"),
-        //                                    "l2-3".to_string(),
-        //                                    vec![Span::Text("l2,3")],
-        //                                    None
-        //                                )
-        //                            ],
-        //                            None
-        //                        ))
-        //                    ),
-        //                    ListItem(
-        //                        Index::Unordered("-"),
-        //                        "l3".to_string(),
-        //                        vec![Span::Text("l3")],
-        //                        None
-        //                    )
-        //                ],
-        //                None
-        //            )]
-        //        );
+        assert_eq!(
+            doc.blocks,
+            IndexMap::from([(
+                (Label::List(Id::Uid(1)), Some(0)),
+                Block::L(
+                    None,
+                    IndexMap::from([
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l1-h".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("l1 "), Span::Hash(None, "H 1")], None),
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l2-h".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(
+                                vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
+                                Some(Box::new((
+                                    (Label::List(Id::Uid(1))),
+                                    Block::L(
+                                        None,
+                                        IndexMap::from([
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-1-h".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(
+                                                    vec![
+                                                        Span::Text("l2,1 "),
+                                                        Span::Hash(
+                                                            Some(HashOp::GreaterThan),
+                                                            "H 3"
+                                                        )
+                                                    ],
+                                                    None
+                                                )
+                                            ),
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-2-h".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(
+                                                    vec![
+                                                        Span::Text("l2,2 "),
+                                                        Span::Hash(Some(HashOp::NotEqual), "H 4")
+                                                    ],
+                                                    Some(Box::new((
+                                                        (Label::List(Id::Uid(1))),
+                                                        Block::L(
+                                                            None,
+                                                            IndexMap::from([(
+                                                                (
+                                                                    Label::ListItem(
+                                                                        LType::Unordered,
+                                                                        Id::Label(
+                                                                            "l2-2-1".to_string()
+                                                                        )
+                                                                    ),
+                                                                    Some(0)
+                                                                ),
+                                                                Block::LI(
+                                                                    vec![Span::Text("l2,2,1")],
+                                                                    None
+                                                                )
+                                                            ),])
+                                                        )
+                                                    )))
+                                                )
+                                            ),
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-3".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(vec![Span::Text("l2,3")], None)
+                                            )
+                                        ])
+                                    )
+                                )))
+                            )
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l3".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("l3")], None),
+                        )
+                    ])
+                )
+            )])
+        );
     }
 
     //    #[test]
@@ -2282,135 +2327,189 @@ mod tests {
         );
     }
 
-    //    #[test]
-    //    fn test_block_definition_list() {
-    //        assert_eq!(
-    //            ast(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
-    //            vec![Block::List(
-    //                vec![
-    //                    ListItem(
-    //                        Index::Definition("ab"),
-    //                        "ab".to_string(),
-    //                        vec![Span::Text("\n  alpha")],
-    //                        None
-    //                    ),
-    //                    ListItem(
-    //                        Index::Definition("12"),
-    //                        "12".to_string(),
-    //                        vec![Span::Text("\n  digit")],
-    //                        Some(Block::List(
-    //                            vec![ListItem(
-    //                                Index::Definition("iv"),
-    //                                "iv".to_string(),
-    //                                vec![Span::Text("\n    roman")],
-    //                                None
-    //                            )],
-    //                            None
-    //                        ))
-    //                    )
-    //                ],
-    //                None
-    //            )]
-    //        )
-    //    }
+    #[test]
+    fn test_block_definition_list() {
+        assert_eq!(
+            ast(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
+            IndexMap::from([(
+                (Label::List(Id::Uid(1)), Some(0)),
+                Block::L(
+                    None,
+                    IndexMap::from([
+                        (
+                            (
+                                Label::ListItem(LType::Definition, Id::Label("ab".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("\n  alpha")], None,),
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Definition, Id::Label("12".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(
+                                vec![Span::Text("\n  digit")],
+                                Some(Box::new((
+                                    (Label::List(Id::Uid(1))),
+                                    Block::L(
+                                        None,
+                                        IndexMap::from([(
+                                            (
+                                                Label::ListItem(
+                                                    LType::Definition,
+                                                    Id::Label("iv".to_string())
+                                                ),
+                                                Some(0)
+                                            ),
+                                            Block::LI(vec![Span::Text("\n    roman")], None)
+                                        )])
+                                    ),
+                                )))
+                            )
+                        )
+                    ])
+                )
+            )])
+        )
+    }
 
-    //    #[test]
-    //    fn test_block_header_sigleline_unordered_list() {
-    //        assert_eq!(
-    //            ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
-    //            vec![Block::Heading(
-    //                HLevel::H2,
-    //                "strong-heading".to_string(),
-    //                vec![Span::Strong(vec![Span::Text("strong heading")], None)],
-    //                vec![Block::List(
-    //                    vec![
-    //                        ListItem(
-    //                            Index::Unordered("-"),
-    //                            "l1-ha".to_string(),
-    //                            vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
-    //                            None
-    //                        ),
-    //                        ListItem(
-    //                            Index::Unordered("-"),
-    //                            "l2-hb".to_string(),
-    //                            vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
-    //                            None
-    //                        )
-    //                    ],
-    //                    None
-    //                )],
-    //                None,
-    //                SpanRefs {
-    //                    tags: Some(IndexMap::from([
-    //                        (
-    //                            "ha".to_string(),
-    //                            vec![
-    //                                HashTag::Str("ha".to_string()),
-    //                                HashTag::Space,
-    //                                HashTag::Num(1)
-    //                            ]
-    //                        ),
-    //                        (
-    //                            "hb".to_string(),
-    //                            vec![
-    //                                HashTag::Str("hb".to_string()),
-    //                                HashTag::Space,
-    //                                HashTag::Num(-1)
-    //                            ]
-    //                        )
-    //                    ])),
-    //                    filters: None,
-    //                    embeds: None,
-    //                },
-    //            )]
-    //        )
-    //    }
+    #[test]
+    fn test_block_header_sigleline_unordered_list() {
+        assert_eq!(
+            ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
+            IndexMap::from([(
+                (
+                    Label::Heading(HType::H2, Id::Label("strong-heading".to_string())),
+                    Some(0)
+                ),
+                Block::H(
+                    None,
+                    vec![Span::Strong(vec![Span::Text("strong heading")], None)],
+                    IndexMap::from([(
+                        (Label::List(Id::Uid(1)), Some(0)),
+                        Block::L(
+                            None,
+                            IndexMap::from([
+                                (
+                                    (
+                                        Label::ListItem(
+                                            LType::Unordered,
+                                            Id::Label("l1-ha".to_string())
+                                        ),
+                                        Some(0)
+                                    ),
+                                    Block::LI(
+                                        vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
+                                        None
+                                    )
+                                ),
+                                (
+                                    (
+                                        Label::ListItem(
+                                            LType::Unordered,
+                                            Id::Label("l2-hb".to_string())
+                                        ),
+                                        Some(0)
+                                    ),
+                                    Block::LI(
+                                        vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
+                                        None
+                                    )
+                                )
+                            ])
+                        )
+                    )]),
+                    SpanRefs {
+                        tags: Some(IndexMap::from([
+                            (
+                                "ha".to_string(),
+                                vec![
+                                    HashTag::Str("ha".to_string()),
+                                    HashTag::Space,
+                                    HashTag::Num(1)
+                                ]
+                            ),
+                            (
+                                "hb".to_string(),
+                                vec![
+                                    HashTag::Str("hb".to_string()),
+                                    HashTag::Space,
+                                    HashTag::Num(-1)
+                                ]
+                            )
+                        ])),
+                        filters: None,
+                        embeds: None,
+                    },
+                )
+            )])
+        )
+    }
 
-    //    #[test]
-    //    fn test_block_header_sigleline_span_not_start_of_line_so_not_list() {
-    //        assert_eq!(
-    //            ast("## [*strong heading\n  - l1*]\n  - l2"),
-    //            vec![Block::Heading(
-    //                HLevel::H2,
-    //                "strong-heading-l1-l2".to_string(),
-    //                vec![
-    //                    Span::Strong(vec![Span::Text("strong heading\n  - l1")], None),
-    //                    Span::Text("\n  - l2")
-    //                ],
-    //                vec![],
-    //                None,
-    //                SpanRefs {
-    //                    tags: None,
-    //                    filters: None,
-    //                    embeds: None,
-    //                }
-    //            )]
-    //        )
-    //    }
+    #[test]
+    fn test_block_header_sigleline_span_not_start_of_line_so_not_list() {
+        assert_eq!(
+            ast("## [*strong heading\n  - l1*]\n  - l2"),
+            IndexMap::from([(
+                (
+                    Label::Heading(HType::H2, Id::Label("strong-heading-l1-l2".to_string())),
+                    Some(0)
+                ),
+                Block::H(
+                    None,
+                    vec![
+                        Span::Strong(vec![Span::Text("strong heading\n  - l1")], None),
+                        Span::Text("\n  - l2")
+                    ],
+                    IndexMap::new(),
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None,
+                    }
+                )
+            )])
+        )
+    }
 
-    //    #[test]
-    //    fn test_block_task_list() {
-    //        assert_eq!(
-    //            ast(": ab\n  - [ ] alpha"),
-    //            vec![Block::List(
-    //                vec![ListItem(
-    //                    Index::Definition("ab"),
-    //                    "ab".to_string(),
-    //                    vec![],
-    //                    Some(Block::List(
-    //                        vec![ListItem(
-    //                            Index::Task("-", " "),
-    //                            "alpha".to_string(),
-    //                            vec![Span::Text("alpha")],
-    //                            None
-    //                        )],
-    //                        None
-    //                    )),
-    //                )],
-    //                None
-    //            )]
-    //        )
-    //    }
+    #[test]
+    fn test_block_task_list() {
+        assert_eq!(
+            ast(": ab\n  - [ ] alpha"),
+            IndexMap::from([(
+                (Label::List(Id::Uid(1)), Some(0)),
+                Block::L(
+                    None,
+                    IndexMap::from([(
+                        (
+                            Label::ListItem(LType::Definition, Id::Label("ab".to_string())),
+                            Some(0)
+                        ),
+                        Block::LI(
+                            vec![],
+                            Some(Box::new((
+                                (Label::List(Id::Uid(1))),
+                                Block::L(
+                                    None,
+                                    IndexMap::from([(
+                                        (
+                                            Label::ListItem(
+                                                LType::Task,
+                                                Id::Label("alpha".to_string())
+                                            ),
+                                            Some(0)
+                                        ),
+                                        Block::LI(vec![Span::Text(" ")], None)
+                                    )])
+                                )
+                            )))
+                        )
+                    )])
+                )
+            )])
+        )
+    }
 
     //    #[test]
     //    fn test_nested_divs_and_headers() {
