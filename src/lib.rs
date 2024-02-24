@@ -1032,7 +1032,7 @@ fn list_block<'a>(
     input: &'a str,
     depth: &'a str,
     index: (Index<'a>, Option<&'a str>),
-    _attrs: Option<IndexMap<&'a str, &'a str>>,
+    attrs: Option<IndexMap<&'a str, &'a str>>,
     span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, Option<Block<'a>>> {
     let mut lis: IndexMap<(Label, Option<usize>), Block<'a>> = IndexMap::new();
@@ -1057,7 +1057,7 @@ fn list_block<'a>(
         }
     }
     let lis = if !lis.is_empty() {
-        Some(Block::L(None, lis))
+        Some(Block::L(attrs, lis))
     } else {
         None
     };
@@ -1079,9 +1079,13 @@ fn nested_list_block<'a>(
                 if d.len() <= depth.len() {
                     Ok((input, None))
                 } else {
+                    let id = if let Some(label) = ah.get(LABEL) {
+                        Id::Label(label.to_string())
+                    } else {
+                        Id::Uid(1)
+                    };
                     if let (i, Some(lb)) = list_block(i, d, index, Some(ah), span_refs)? {
-                        // TODO: check attributes for label
-                        Ok((i, Some(Box::new((Label::List(Id::Uid(1)), lb)))))
+                        Ok((i, Some(Box::new((Label::List(id), lb)))))
                     } else {
                         Ok((input, None))
                     }
@@ -2152,133 +2156,211 @@ mod tests {
         );
     }
 
-    //    #[test]
-    //    fn test_block_unordered_list_singleline_w_attrs() {
-    //        assert_eq!(
-    //            ast(r#"{k1=v1}
-    //- l1
-    //- l2
-    //  {k2=v2}
-    //  - l2,1
-    //  - l2,2
-    //    - l2,2,1
-    //  - l2,3
-    //- l3"#),
-    //            vec![Block::List(
-    //                vec![
-    //                    ListItem(
-    //                        Index::Unordered("-"),
-    //                        "l1".to_string(),
-    //                        vec![Span::Text("l1")],
-    //                        None
-    //                    ),
-    //                    ListItem(
-    //                        Index::Unordered("-"),
-    //                        "l2".to_string(),
-    //                        vec![Span::Text("l2")],
-    //                        Some(Block::List(
-    //                            vec![
-    //                                ListItem(
-    //                                    Index::Unordered("-"),
-    //                                    "l2-1".to_string(),
-    //                                    vec![Span::Text("l2,1")],
-    //                                    None
-    //                                ),
-    //                                ListItem(
-    //                                    Index::Unordered("-"),
-    //                                    "l2-2".to_string(),
-    //                                    vec![Span::Text("l2,2")],
-    //                                    Some(Block::List(
-    //                                        vec![ListItem(
-    //                                            Index::Unordered("-"),
-    //                                            "l2-2-1".to_string(),
-    //                                            vec![Span::Text("l2,2,1")],
-    //                                            None
-    //                                        )],
-    //                                        None
-    //                                    ))
-    //                                ),
-    //                                ListItem(
-    //                                    Index::Unordered("-"),
-    //                                    "l2-3".to_string(),
-    //                                    vec![Span::Text("l2,3")],
-    //                                    None
-    //                                )
-    //                            ],
-    //                            Some(IndexMap::from([("k2", "v2")]))
-    //                        ))
-    //                    ),
-    //                    ListItem(
-    //                        Index::Unordered("-"),
-    //                        "l3".to_string(),
-    //                        vec![Span::Text("l3")],
-    //                        None
-    //                    )
-    //                ],
-    //                Some(IndexMap::from([("k1", "v1")]))
-    //            )]
-    //        );
-    //    }
+    #[test]
+    fn test_block_unordered_list_singleline_w_attrs() {
+        assert_eq!(
+            ast(r#"{k1=v1}
+- l1
+- l2
+  {k2=v2 label=SubList2}
+  - l2,1
+  - l2,2
+    - l2,2,1
+  - l2,3
+- l3"#),
+            IndexMap::from([(
+                (Label::List(Id::Uid(1)), Some(0)),
+                Block::L(
+                    Some(IndexMap::from([("k1", "v1")])),
+                    IndexMap::from([
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l1".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("l1")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l2".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(
+                                vec![Span::Text("l2")],
+                                Some(Box::new((
+                                    (Label::List(Id::Label("SubList2".to_string()))),
+                                    Block::L(
+                                        Some(IndexMap::from([("k2", "v2"), ("label", "SubList2")])),
+                                        IndexMap::from([
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-1".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(vec![Span::Text("l2,1")], None)
+                                            ),
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-2".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(
+                                                    vec![Span::Text("l2,2")],
+                                                    Some(Box::new((
+                                                        (Label::List(Id::Uid(1))),
+                                                        Block::L(
+                                                            None,
+                                                            IndexMap::from([(
+                                                                (
+                                                                    Label::ListItem(
+                                                                        LType::Unordered,
+                                                                        Id::Label(
+                                                                            "l2-2-1".to_string()
+                                                                        )
+                                                                    ),
+                                                                    Some(0)
+                                                                ),
+                                                                Block::LI(
+                                                                    vec![Span::Text("l2,2,1")],
+                                                                    None
+                                                                )
+                                                            )])
+                                                        )
+                                                    )))
+                                                )
+                                            ),
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-3".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(vec![Span::Text("l2,3")], None)
+                                            )
+                                        ])
+                                    )
+                                )))
+                            )
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l3".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("l3")], None)
+                        )
+                    ])
+                )
+            )])
+        );
+    }
 
-    //    #[test]
-    //    fn test_block_unordered_list_singleline() {
-    //        assert_eq!(
-    //            ast("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
-    //            vec![Block::List(
-    //                vec![
-    //                    ListItem(
-    //                        Index::Unordered("-"),
-    //                        "l1".to_string(),
-    //                        vec![Span::Text("l1")],
-    //                        None
-    //                    ),
-    //                    ListItem(
-    //                        Index::Unordered("-"),
-    //                        "l2".to_string(),
-    //                        vec![Span::Text("l2")],
-    //                        Some(Block::List(
-    //                            vec![
-    //                                ListItem(
-    //                                    Index::Unordered("-"),
-    //                                    "l2-1".to_string(),
-    //                                    vec![Span::Text("l2,1")],
-    //                                    None
-    //                                ),
-    //                                ListItem(
-    //                                    Index::Unordered("-"),
-    //                                    "l2-2".to_string(),
-    //                                    vec![Span::Text("l2,2")],
-    //                                    Some(Block::List(
-    //                                        vec![ListItem(
-    //                                            Index::Unordered("-"),
-    //                                            "l2-2-1".to_string(),
-    //                                            vec![Span::Text("l2,2,1")],
-    //                                            None
-    //                                        )],
-    //                                        None
-    //                                    ))
-    //                                ),
-    //                                ListItem(
-    //                                    Index::Unordered("-"),
-    //                                    "l2-3".to_string(),
-    //                                    vec![Span::Text("l2,3")],
-    //                                    None
-    //                                )
-    //                            ],
-    //                            None
-    //                        ))
-    //                    ),
-    //                    ListItem(
-    //                        Index::Unordered("-"),
-    //                        "l3".to_string(),
-    //                        vec![Span::Text("l3")],
-    //                        None
-    //                    )
-    //                ],
-    //                None
-    //            )]
-    //        );
-    //    }
+    #[test]
+    fn test_block_unordered_list_singleline() {
+        assert_eq!(
+            ast("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
+            IndexMap::from([(
+                (Label::List(Id::Uid(1)), Some(0)),
+                Block::L(
+                    None,
+                    IndexMap::from([
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l1".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("l1")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l2".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(
+                                vec![Span::Text("l2")],
+                                Some(Box::new((
+                                    (Label::List(Id::Uid(1))),
+                                    Block::L(
+                                        None,
+                                        IndexMap::from([
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-1".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(vec![Span::Text("l2,1")], None)
+                                            ),
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-2".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(
+                                                    vec![Span::Text("l2,2")],
+                                                    Some(Box::new((
+                                                        (Label::List(Id::Uid(1))),
+                                                        Block::L(
+                                                            None,
+                                                            IndexMap::from([(
+                                                                (
+                                                                    Label::ListItem(
+                                                                        LType::Unordered,
+                                                                        Id::Label(
+                                                                            "l2-2-1".to_string()
+                                                                        )
+                                                                    ),
+                                                                    Some(0)
+                                                                ),
+                                                                Block::LI(
+                                                                    vec![Span::Text("l2,2,1")],
+                                                                    None
+                                                                )
+                                                            )])
+                                                        )
+                                                    )))
+                                                )
+                                            ),
+                                            (
+                                                (
+                                                    Label::ListItem(
+                                                        LType::Unordered,
+                                                        Id::Label("l2-3".to_string())
+                                                    ),
+                                                    Some(0)
+                                                ),
+                                                Block::LI(vec![Span::Text("l2,3")], None)
+                                            )
+                                        ])
+                                    )
+                                )))
+                            )
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Unordered, Id::Label("l3".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("l3")], None)
+                        )
+                    ])
+                )
+            )])
+        );
+    }
 
     #[test]
     fn test_block_ordered_list() {
@@ -2511,174 +2593,273 @@ mod tests {
         )
     }
 
-    //    #[test]
-    //    fn test_nested_divs_and_headers() {
-    //        let doc = ast("# h1\n\ndoc > h1\n\n## h2a\n\ndoc > h1 > h2a\n\n::: d1\n\ndoc > h1 > h2a > d1\n\n### h3a\n\ndoc > h1 > h2a > d1 > h3a\n\n#### h4a\n\ndoc > h1 > h2a > d1 > h3a > h4a\n\n#### h4b\n\ndoc > h1 > h2a > d1 > h3a > h4b\n\n:::\n\ndoc > h1 > h2a\n\n### h3b\n\ndoc > h1 > h2a > h3b\n\n::: d2\ndoc > h1 > h2a > h3b > d2\n\n#### h4b\n\ndoc > h1 > h2a > h3b > d2 > h4b\n\n## h2a\n\ndoc > h1 > h2b\n\n:::\ndoc > h1 > h2b // No change\n");
-    //        assert_eq!(
-    //            doc,
-    //            vec![Block::Heading(
-    //                HLevel::H1,
-    //                "h1".to_string(),
-    //                vec![Span::Text("h1")],
-    //                vec![
-    //                    Block::Paragraph(vec![Span::Text("doc > h1")], None,),
-    //                    Block::Heading(
-    //                        HLevel::H2,
-    //                        "h2a".to_string(),
-    //                        vec![Span::Text("h2a")],
-    //                        vec![
-    //                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None,),
-    //                            Block::Div(
-    //                                "d1",
-    //                                "d1".to_string(),
-    //                                vec![
-    //                                    Block::Paragraph(vec![Span::Text("doc > h1 > h2a > d1")], None,),
-    //                                    Block::Heading(
-    //                                        HLevel::H3,
-    //                                        "h3a".to_string(),
-    //                                        vec![Span::Text("h3a")],
-    //                                        vec![
-    //                                            Block::Paragraph(
-    //                                                vec![Span::Text("doc > h1 > h2a > d1 > h3a")],
-    //                                                None,
-    //                                            ),
-    //                                            Block::Heading(
-    //                                                HLevel::H4,
-    //                                                "h4a".to_string(),
-    //                                                vec![Span::Text("h4a")],
-    //                                                vec![Block::Paragraph(
-    //                                                    vec![Span::Text(
-    //                                                        "doc > h1 > h2a > d1 > h3a > h4a"
-    //                                                    )],
-    //                                                    None,
-    //                                                )],
-    //                                                None,
-    //                                                SpanRefs {
-    //                                                    tags: None,
-    //                                                    filters: None,
-    //                                                    embeds: None
-    //                                                }
-    //                                            ),
-    //                                            Block::Heading(
-    //                                                HLevel::H4,
-    //                                                "h4b".to_string(),
-    //                                                vec![Span::Text("h4b")],
-    //                                                vec![Block::Paragraph(
-    //                                                    vec![Span::Text(
-    //                                                        "doc > h1 > h2a > d1 > h3a > h4b"
-    //                                                    )],
-    //                                                    None,
-    //                                                )],
-    //                                                None,
-    //                                                SpanRefs {
-    //                                                    tags: None,
-    //                                                    filters: None,
-    //                                                    embeds: None
-    //                                                }
-    //                                            )
-    //                                        ],
-    //                                        None,
-    //                                        SpanRefs {
-    //                                            tags: None,
-    //                                            filters: None,
-    //                                            embeds: None
-    //                                        }
-    //                                    )
-    //                                ],
-    //                                None,
-    //                                SpanRefs {
-    //                                    tags: None,
-    //                                    filters: None,
-    //                                    embeds: None
-    //                                }
-    //                            ),
-    //                            Block::Paragraph(vec![Span::Text("doc > h1 > h2a")], None,),
-    //                            Block::Heading(
-    //                                HLevel::H3,
-    //                                "h3b".to_string(),
-    //                                vec![Span::Text("h3b")],
-    //                                vec![
-    //                                    Block::Paragraph(
-    //                                        vec![Span::Text("doc > h1 > h2a > h3b")],
-    //                                        None,
-    //                                    ),
-    //                                    Block::Div(
-    //                                        "d2",
-    //                                        "d2".to_string(),
-    //                                        vec![
-    //                                            Block::Paragraph(
-    //                                                vec![Span::Text("doc > h1 > h2a > h3b > d2")],
-    //                                                None,
-    //                                            ),
-    //                                            Block::Heading(
-    //                                                HLevel::H4,
-    //                                                "h4b".to_string(),
-    //                                                vec![Span::Text("h4b")],
-    //                                                vec![Block::Paragraph(
-    //                                                    vec![Span::Text(
-    //                                                        "doc > h1 > h2a > h3b > d2 > h4b"
-    //                                                    )],
-    //                                                    None,
-    //                                                )],
-    ////                                                None,
-    ////                                                SpanRefs {
-    ////                                                    tags: None,
-    ////                                                    filters: None,
-    ////                                                    embeds: None,
-    ////                                                }
-    ////                                            )
-    ////                                        ],
-    ////                                        None,
-    ////                                        SpanRefs {
-    ////                                            tags: None,
-    ////                                            filters: None,
-    ////                                            embeds: None
-    ////                                        }
-    ////                                    )
-    ////                                ],
-    ////                                None,
-    ////                                SpanRefs {
-    ////                                    tags: None,
-    ////                                    filters: None,
-    ////                                    embeds: None,
-    ////                                }
-    ////                            )
-    ////                        ],
-    ////                        None,
-    ////                        SpanRefs {
-    ////                            tags: None,
-    ////                            filters: None,
-    ////                            embeds: None,
-    ////                        }
-    ////                    ),
-    ////                    Block::Heading(
-    ////                        HLevel::H2,
-    ////                        "h2a".to_string(),
-    ////                        vec![Span::Text("h2a")],
-    ////                        vec![
-    ////                            Block::Paragraph(vec![Span::Text("doc > h1 > h2b")], None,),
-    ////                            Block::Paragraph(
-    ////                                vec![Span::Text(":::\ndoc > h1 > h2b // No change\n")],
-    ////                                None,
-    ////                            )
-    ////                        ],
-    ////                        None,
-    ////                        SpanRefs {
-    ////                            tags: None,
-    ////                            filters: None,
-    ////                            embeds: None,
-    ////                        }
-    ////                    )
-    ////                ],
-    ////                None,
-    //                SpanRefs {
-    //                    tags: None,
-    //                    filters: None,
-    //                    embeds: None,
-    //                }
-    //            )]
-    //        );
-    //    }
+    #[test]
+    fn test_nested_divs_and_headers() {
+        let doc = ast(r#"# h1
+
+doc > h1
+
+## h2a
+
+doc > h1 > h2a
+
+::: d1
+
+doc > h1 > h2a > d1
+
+### h3a
+
+doc > h1 > h2a > d1 > h3a
+
+#### h4a
+
+doc > h1 > h2a > d1 > h3a > h4a
+
+#### h4b
+
+doc > h1 > h2a > d1 > h3a > h4b
+
+:::
+
+doc > h1 > h2a
+
+### h3b
+
+doc > h1 > h2a > h3b
+
+::: d2
+doc > h1 > h2a > h3b > d2
+
+#### h4b
+
+doc > h1 > h2a > h3b > d2 > h4b
+
+## h2b
+
+doc > h1 > h2b
+
+:::
+doc > h1 > h2b // No change
+"#);
+        assert_eq!(
+            doc,
+            IndexMap::from([(
+                (Label::Heading(HType::H1, Id::Label("h1".to_string())), Some(0)),
+                Block::H(
+                    None,
+                    vec![Span::Text("h1")],
+                    IndexMap::from([
+                        (
+                            (Label::Paragraph(Id::Uid(1)), None),
+                            Block::P(
+                                None,
+                                vec![Span::Text("doc > h1")]
+                            )
+                        ),
+                        (
+                            (Label::Heading(HType::H2, Id::Label("h2a".to_string())), Some(0)),
+                            Block::H(
+                                None,
+                                vec![Span::Text("h2a")],
+                                IndexMap::from([
+                                    (
+                                        (Label::Paragraph(Id::Uid(1)), None),
+                                        Block::P(
+                                            None,
+                                            vec![Span::Text("doc > h1 > h2a")]
+                                        ),
+                                    ),(
+                                        (Label::Div(Id::Label("d1".to_string())), Some(0)),
+                                        Block::D(
+                                            None,
+                                            "d1",
+                                            IndexMap::from([
+                                                (
+                                                    (Label::Paragraph(Id::Uid(1)), None),
+                                                    Block::P(
+                                                        None,
+                                                        vec![Span::Text("doc > h1 > h2a > d1")]
+                                                    )
+                                                ),(
+                                                    (Label::Heading(HType::H3, Id::Label("h3a".to_string())), Some(0)),
+                                                    Block::H(
+                                                        None,
+                                                        vec![Span::Text("h3a")],
+                                                        IndexMap::from([
+                                                            (
+                                                                (Label::Paragraph(Id::Uid(1)), None),
+                                                                Block::P(
+                                                                    None,
+                                                                    vec![Span::Text("doc > h1 > h2a > d1 > h3a")]
+                                                                )
+                                                            ),(
+                                                                (Label::Heading(HType::H4, Id::Label("h4a".to_string())), Some(0)),
+                                                                Block::H(
+                                                                    None,
+                                                                    vec![Span::Text("h4a")],
+                                                                    IndexMap::from([(
+                                                                        (Label::Paragraph(Id::Uid(1)), None),
+                                                                        Block::P(
+                                                                            None,
+                                                                            vec![Span::Text(
+                                                                                "doc > h1 > h2a > d1 > h3a > h4a"
+                                                                            )]
+                                                                        )
+                                                                    )]),
+                                                                    SpanRefs {
+                                                                        tags: None,
+                                                                        filters: None,
+                                                                        embeds: None
+                                                                    }
+                                                                )
+                                                            ),(
+                                                                (Label::Heading(HType::H4, Id::Label("h4b".to_string())), Some(0)),
+                                                                Block::H(
+                                                                    None,
+                                                                    vec![Span::Text("h4b")],
+                                                                    IndexMap::from([(
+                                                                        (Label::Paragraph(Id::Uid(1)), None),
+                                                                        Block::P(
+                                                                            None,
+                                                                            vec![Span::Text(
+                                                                                "doc > h1 > h2a > d1 > h3a > h4b"
+                                                                            )]
+                                                                        )
+                                                                    )]),
+                                                                    SpanRefs {
+                                                                        tags: None,
+                                                                        filters: None,
+                                                                        embeds: None
+                                                                    }
+                                                                )
+                                                            )
+                                                        ]),
+                                                        SpanRefs {
+                                                            tags: None,
+                                                            filters: None,
+                                                            embeds: None
+                                                        }
+                                                    )
+                                                )
+                                            ]),
+                                            SpanRefs {
+                                                tags: None,
+                                                filters: None,
+                                                embeds: None
+                                            }
+                                        )
+                                    ),(
+                                        (Label::Paragraph(Id::Uid(2)), None),
+                                        Block::P(
+                                            None,
+                                            vec![Span::Text("doc > h1 > h2a")]
+                                        ),
+                                    ),(
+                                        (Label::Heading(HType::H3, Id::Label("h3b".to_string())), Some(0)),
+                                        Block::H(
+                                            None,
+                                            vec![Span::Text("h3b")],
+                                            IndexMap::from([
+                                                (
+                                                    (Label::Paragraph(Id::Uid(1)), None),
+                                                    Block::P(
+                                                        None,
+                                                        vec![Span::Text("doc > h1 > h2a > h3b")]
+                                                    ),
+                                                ),(
+                                                    (Label::Div(Id::Label("d2".to_string())), Some(0)),
+                                                    Block::D(
+                                                        None,
+                                                        "d2",
+                                                        IndexMap::from([
+                                                            (
+                                                                (Label::Paragraph(Id::Uid(1)), None),
+                                                                Block::P(
+                                                                    None,
+                                                                    vec![Span::Text("doc > h1 > h2a > h3b > d2")]
+                                                                )
+                                                            ),(
+                                                                (Label::Heading(HType::H4, Id::Label("h4b".to_string())), Some(0)),
+                                                                Block::H(
+                                                                    None,
+                                                                    vec![Span::Text("h4b")],
+                                                                    IndexMap::from([(
+                                                                        (Label::Paragraph(Id::Uid(1)), None),
+                                                                        Block::P(
+                                                                            None,
+                                                                            vec![Span::Text(
+                                                                                "doc > h1 > h2a > h3b > d2 > h4b"
+                                                                            )]
+                                                                        )
+                                                                    )]),
+                                                                    SpanRefs {
+                                                                        tags: None,
+                                                                        filters: None,
+                                                                        embeds: None,
+                                                                    }
+                                                                )
+                                                            )
+                                                        ]),
+                                                        SpanRefs {
+                                                            tags: None,
+                                                            filters: None,
+                                                            embeds: None
+                                                        }
+                                                    )
+                                                )
+                                            ]),
+                                            SpanRefs {
+                                                tags: None,
+                                                filters: None,
+                                                embeds: None,
+                                            }
+                                        )
+                                    )
+                                ]),
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None,
+                                }
+                            )
+                        ),(
+                            (Label::Heading(HType::H2, Id::Label("h2b".to_string())), Some(0)),
+                            Block::H(
+                                None,
+                                vec![Span::Text("h2b")],
+                                IndexMap::from([
+                                    (
+                                        (Label::Paragraph(Id::Uid(1)), None),
+                                        Block::P(
+                                            None,
+                                            vec![Span::Text("doc > h1 > h2b")]
+                                        ),
+                                    ),
+                                    (
+                                        (Label::Paragraph(Id::Uid(2)), None),
+                                        Block::P(
+                                            None,
+                                            vec![Span::Text(":::\ndoc > h1 > h2b // No change\n")]
+                                        ),
+                                     )
+                                ]),
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None,
+                                }
+                            )
+                        )
+                    ]),
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None,
+                    }
+                )
+            )])
+        );
+    }
 
     #[test]
     fn test_content_and_hashtag_index_of_block_paragraph_link_with_location_and_span() {
@@ -2699,75 +2880,78 @@ mod tests {
                 embeds: Some(vec![("text-32--32v-ab".to_string(), "loC".to_string())])
             }
         );
-        //        assert_eq!(
-        //            doc.blocks,
-        //            vec![Block::Paragraph(
-        //                vec![
-        //                    Span::Text("Left "),
-        //                    Span::LineBreak("\n"),
-        //                    Span::Link(
-        //                        "loC",
-        //                        true,
-        //                        vec![
-        //                            Span::Text("text-32 "),
-        //                            Span::Verbatim("-32v", None, None),
-        //                            Span::Text(" "),
-        //                            Span::Strong(
-        //                                vec![
-        //                                    Span::Text("a"),
-        //                                    Span::Emphasis(vec![Span::Text("B"),], None)
-        //                                ],
-        //                                None
-        //                            )
-        //                        ],
-        //                        None
-        //                    ),
-        //                    Span::Text(" Right "),
-        //                    Span::Hash(None, "Level 1"),
-        //                    Span::Text("\n")
-        //                ],
-        //                None,
-        //            )]
-        //        );
-        //        if let Block::Paragraph(ss, _) = &doc.blocks[0] {
-        //            let ts = contents(&ss, true);
-        //            assert_eq!(
-        //                ts,
-        //                vec![
-        //                    "Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "L", "e", "v",
-        //                    "e", "l", " ", "\n"
-        //                ]
-        //            );
-        //            let hts = hashtags(ts);
-        //            assert_eq!(
-        //                hts,
-        //                vec![
-        //                    HashTag::Str("left".to_string()),
-        //                    HashTag::Space,
-        //                    HashTag::Str("text".to_string()),
-        //                    HashTag::Space,
-        //                    HashTag::Num(32),
-        //                    HashTag::Space,
-        //                    HashTag::Num(-32),
-        //                    HashTag::Str("v".to_string()),
-        //                    HashTag::Space,
-        //                    HashTag::Str("ab".to_string()),
-        //                    HashTag::Space,
-        //                    HashTag::Str("right".to_string()),
-        //                    HashTag::Space,
-        //                    HashTag::Str("level".to_string()),
-        //                ]
-        //            );
-        //            let s = htindex(&hts);
-        //            assert_eq!(s, "left-text-32--32v-ab-right-level");
-        //            let s = htlabel(&hts);
-        //            assert_eq!(s, "left-text-v-ab-right-level");
-        //        } else {
-        //            panic!(
-        //                "Not able to get span from paragragh within vector {:?}",
-        //                doc
-        //            );
-        //        }
+        assert_eq!(
+            doc.blocks,
+            IndexMap::from([(
+                (Label::Paragraph(Id::Uid(1)), None),
+                Block::P(
+                    None,
+                    vec![
+                        Span::Text("Left "),
+                        Span::LineBreak("\n"),
+                        Span::Link(
+                            "loC",
+                            true,
+                            vec![
+                                Span::Text("text-32 "),
+                                Span::Verbatim("-32v", None, None),
+                                Span::Text(" "),
+                                Span::Strong(
+                                    vec![
+                                        Span::Text("a"),
+                                        Span::Emphasis(vec![Span::Text("B"),], None)
+                                    ],
+                                    None
+                                )
+                            ],
+                            None
+                        ),
+                        Span::Text(" Right "),
+                        Span::Hash(None, "Level 1"),
+                        Span::Text("\n")
+                    ],
+                )
+            )])
+        );
+        if let Some((_, Block::P(_, ss))) = doc.blocks.get_index(0) {
+            let ts = contents(&ss, true);
+            assert_eq!(
+                ts,
+                vec![
+                    "Left ", "\n", "text-32 ", "-32v", " ", "a", "B", " Right ", "L", "e", "v",
+                    "e", "l", " ", "\n"
+                ]
+            );
+            let hts = hashtags(ts);
+            assert_eq!(
+                hts,
+                vec![
+                    HashTag::Str("left".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("text".to_string()),
+                    HashTag::Space,
+                    HashTag::Num(32),
+                    HashTag::Space,
+                    HashTag::Num(-32),
+                    HashTag::Str("v".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("ab".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("right".to_string()),
+                    HashTag::Space,
+                    HashTag::Str("level".to_string()),
+                ]
+            );
+            let s = htindex(&hts);
+            assert_eq!(s, "left-text-32--32v-ab-right-level");
+            let s = htlabel(&hts);
+            assert_eq!(s, "left-text-v-ab-right-level");
+        } else {
+            panic!(
+                "Not able to get span from paragragh within vector {:?}",
+                doc
+            );
+        }
     }
 
     #[test]
