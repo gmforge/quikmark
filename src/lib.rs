@@ -243,7 +243,7 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
         })
 }
 
-// Hash tag labels are used to index the hash tags minus any span formatting,
+// Hash tag labels generates indexes of hash tags minus any span formatting,
 // nor numerical values, so that ranges of hashtags may be compared.
 pub fn htlabel(hts: &Vec<HashTag>) -> String {
     let mut s = String::new();
@@ -268,8 +268,8 @@ pub fn htlabel(hts: &Vec<HashTag>) -> String {
     s
 }
 
-// Hash tag indexes are used to compare content minus any span formatting.
-pub fn htindex(hts: &Vec<HashTag>) -> String {
+// span label generates indexes used to compare content minus any span formatting.
+pub fn span_label(hts: &Vec<HashTag>) -> String {
     let mut s = String::new();
     for ht in hts {
         match ht {
@@ -284,12 +284,15 @@ pub fn htindex(hts: &Vec<HashTag>) -> String {
     s
 }
 
-// NOTE: Dashes are excluded and must be checked separately,
-// for they may be treated as spacing or a negative number.
-// Same for plus signs.
+// NOTE: Dash is excluded and must be checked separately,
+// as it may be treated either as spacing or a negative number.
+// Same for plus sign.
+// Similar situation found with period as decimal,
+// colen as a ratio, and forward slash as a fraction
+// carrot and double asterisk as an exponential.
 // TODO: add special quotations and hyphens
 pub fn punctuation(input: &str) -> IResult<&str, &str> {
-    is_a(r#"_~@#$%^&*`'".,;:!¡?¿(){}[]§"#)(input)
+    is_a(r#"_~`'"\,;!¡?¿"#)(input)
 }
 
 // Tags turns contents into hash tags type that may be used for ordering
@@ -602,7 +605,7 @@ impl SpanRefs {
         let embed = e.is_some();
         let (i, ss) = self.spans(i, Some("]]"), None);
         if embed {
-            let label = htindex(&hashtags(contents(&ss, false)));
+            let label = span_label(&hashtags(contents(&ss, false)));
             let link = l.to_string();
             if let Some(es) = &mut self.embeds {
                 es.push((label, link));
@@ -1169,7 +1172,7 @@ fn list_item<'a>(
         (Index(LType::Definition, s), _v) => Ok((
             input,
             (
-                Label::ListItem(LType::Definition, Id::Label(htindex(&hashtags(vec![s])))),
+                Label::ListItem(LType::Definition, Id::Label(span_label(&hashtags(vec![s])))),
                 Block::LI(ss, nlb),
             ),
         )),
@@ -1178,7 +1181,7 @@ fn list_item<'a>(
             (
                 Label::ListItem(
                     LType::Unordered,
-                    Id::Label(htindex(&hashtags(contents(&ss, true)))),
+                    Id::Label(span_label(&hashtags(contents(&ss, true)))),
                 ),
                 Block::LI(ss, nlb),
             ),
@@ -1188,7 +1191,7 @@ fn list_item<'a>(
             (
                 Label::ListItem(
                     LType::Task,
-                    Id::Label(htindex(&hashtags(contents(&ss, true)))),
+                    Id::Label(span_label(&hashtags(contents(&ss, true)))),
                 ),
                 Block::LI(vec![Span::Text(v)], nlb),
             ),
@@ -1282,7 +1285,7 @@ fn blocks<'a>(
             let (input, div_bs) = blocks(input, true, refs, &mut span_refs)?;
             let (input, _) = opt(div_close)(input)?;
             i = input;
-            let div_index = htindex(&hashtags(vec![name]));
+            let div_index = span_label(&hashtags(vec![name]));
             let label = Label::Div(Id::Label(div_index));
             let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
@@ -1303,7 +1306,7 @@ fn blocks<'a>(
             let (input, head_spans) = span_refs.spans(input, None, Some(false));
             let (input, head_blocks) = blocks(input, divs, Some(hl), &mut span_refs)?;
             i = input;
-            let head_index = htindex(&hashtags(contents(&head_spans, false)));
+            let head_index = span_label(&hashtags(contents(&head_spans, false)));
             let label = Label::Heading(hl, Id::Label(head_index));
             let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
@@ -2986,7 +2989,7 @@ doc > h1 > h2b // No change
                     HashTag::Str("level".to_string()),
                 ]
             );
-            let s = htindex(&hts);
+            let s = span_label(&hts);
             assert_eq!(s, "left-text-32--32v-ab-right-level");
             let s = htlabel(&hts);
             assert_eq!(s, "left-text-v-ab-right-level");
@@ -3009,7 +3012,7 @@ doc > h1 > h2b // No change
             assert_eq!(*attrs, None);
             let ts = contents(&ss, false);
             let hts = hashtags(ts);
-            let s = htindex(&hts);
+            let s = span_label(&hts);
             assert_eq!(s, "level-0");
             let s = htlabel(&hts);
             assert_eq!(s, "level");
@@ -3037,7 +3040,7 @@ doc > h1 > h2b // No change
             assert_eq!(*attrs, None);
             let ts = contents(&ss, false);
             let hts = hashtags(ts);
-            let s = htindex(&hts);
+            let s = span_label(&hts);
             assert_eq!(s, "--33-32-31--30");
             let s = htlabel(&hts);
             assert_eq!(s, "-");
