@@ -284,6 +284,14 @@ pub fn htindex(hts: &Vec<HashTag>) -> String {
     s
 }
 
+// NOTE: Dashes are excluded and must be checked separately,
+// for they may be treated as spacing or a negative number.
+// Same for plus signs.
+// TODO: add special quotations and hyphens
+pub fn punctuation(input: &str) -> IResult<&str, &str> {
+    is_a(r#"_~@#$%^&*`'".,;:!¡?¿(){}[]§"#)(input)
+}
+
 // Tags turns contents into hash tags type that may be used for ordering
 // anchor strings for referencing/indexing, or filtering.
 pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
@@ -292,8 +300,13 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
         .fold((Vec::new(), None), |(mut hts, mut ht), c| {
             let mut i = *c;
             while !i.is_empty() {
-                if let Ok((c, (cd, (n, d)))) =
-                    consumed(tuple((opt(tag::<&str, &str, ()>("-")), digit1)))(i)
+                if let Ok((c, (cd, (n, d)))) = consumed(tuple((
+                    opt(alt((
+                        tag::<&str, &str, ()>("-"),
+                        tag::<&str, &str, ()>("+"),
+                    ))),
+                    digit1,
+                )))(i)
                 {
                     let (d, dash_is_space) = if let Some(HashTag::Str(_)) = ht {
                         (d, true)
@@ -344,7 +357,7 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                         }
                     }
                     i = c;
-                } else if let Ok((c, _s)) = alt((multispace1::<&str, ()>, value(" ", anychar)))(i) {
+                } else if let Ok((c, _s)) = alt((multispace1, value(" ", punctuation)))(i) {
                     match ht {
                         Some(HashTag::Str(s)) => {
                             hts.push(HashTag::Str(s.to_lowercase()));
@@ -353,6 +366,33 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                         Some(HashTag::Space) => {}
                         Some(HashTag::Num(_)) | None => {
                             ht = Some(HashTag::Space);
+                        }
+                    }
+                    i = c;
+                } else if let Ok((c, (a, _))) = consumed(anychar::<&str, ()>)(i) {
+                    if a == "-" || a == "+" {
+                        match ht {
+                            Some(HashTag::Str(s)) => {
+                                hts.push(HashTag::Str(s.to_lowercase()));
+                                ht = Some(HashTag::Space);
+                            }
+                            Some(HashTag::Space) => {}
+                            Some(HashTag::Num(_)) | None => {
+                                ht = Some(HashTag::Space);
+                            }
+                        }
+                    } else {
+                        match ht {
+                            Some(HashTag::Str(nas)) => {
+                                ht = Some(HashTag::Str(nas + a));
+                            }
+                            Some(HashTag::Space) => {
+                                hts.push(HashTag::Space);
+                                ht = Some(HashTag::Str(a.to_string()));
+                            }
+                            Some(HashTag::Num(_)) | None => {
+                                ht = Some(HashTag::Str(a.to_string()));
+                            }
                         }
                     }
                     i = c;
@@ -1342,6 +1382,10 @@ pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
         Err(e) => Err(Box::from(format!("Unable to parse input: {e:?}"))),
     }
 }
+
+//pub fn merge<'_>(doc: Document<'_>) -> Document<'_> {
+//    doc
+//
 
 #[cfg(test)]
 mod tests {
