@@ -1018,7 +1018,7 @@ fn ratio(input: &str) -> IResult<&str, &str> {
 fn task(input: &str) -> IResult<&str, (Index, Option<&str>)> {
     let (i, (l, task_value)) = tuple((
         terminated(is_a("-+*"), tag(" [")),
-        terminated(alt((tag(" "), tag("x"), tag("X"), ratio, digit1)), tag("]")),
+        terminated(alt((tag(" "), tag("x"), tag("X"), ratio, number)), tag("]")),
     ))(input)?;
     Ok((i, (Index(LType::Task, l), Some(task_value))))
 }
@@ -2643,6 +2643,76 @@ mod tests {
                             )))
                         )
                     )])
+                )
+            )])
+        )
+    }
+
+    #[test]
+    fn test_block_task_values_list() {
+        assert_eq!(
+            ast(r#"- [ ] alpha
+- [x] bravo
+- [X] charlie
+- [0:1] delta
+- [10] echo
+- [-10] foxtrot
+- [+10] golf"#),
+            IndexMap::from([(
+                (Label::List(Id::Uid(1)), Some(0)),
+                Block::L(
+                    None,
+                    IndexMap::from([
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("alpha".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text(" ")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("bravo".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("x")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("charlie".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("X")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("delta".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("0:1")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("echo".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("10")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("foxtrot".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("-10")], None)
+                        ),
+                        (
+                            (
+                                Label::ListItem(LType::Task, Id::Label("golf".to_string())),
+                                Some(0)
+                            ),
+                            Block::LI(vec![Span::Text("+10")], None)
+                        )
+                    ])
                 )
             )])
         )
