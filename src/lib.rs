@@ -192,7 +192,7 @@ impl fmt::Display for HashTag {
 }
 
 fn number(input: &str) -> IResult<&str, &str> {
-    let (i, (c, _)) = consumed(tuple((opt(tag("-")), digit1)))(input)?;
+    let (i, (c, _)) = consumed(tuple((opt(alt((tag("-"), tag("+")))), digit1)))(input)?;
     Ok((i, c))
 }
 
@@ -792,13 +792,13 @@ impl SpanRefs {
 
 // BLOCKS
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum Id {
     Uid(usize),
     Label(String),
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum LType {
     // : <<Locator>>
     Definition,
@@ -821,7 +821,7 @@ pub enum LType {
 //   | Table
 //   | Paragraph
 // }
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum Label {
     Div(Id),
     Heading(HType, Id),
@@ -902,7 +902,7 @@ static HTYPE: phf::Map<&'static str, HType> = phf_map! {
     "######" => HType::H6,
 };
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Clone, Copy, Hash)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum HType {
     H1,
     H2,
@@ -1386,9 +1386,17 @@ pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     }
 }
 
-//pub fn merge<'_>(doc: Document<'_>) -> Document<'_> {
-//    doc
-//
+pub fn merge<'a>(_doc: &Document<'a>) -> Document<'a> {
+    let mdoc = Document {
+        blocks: IndexMap::new(),
+        span_refs: SpanRefs {
+            tags: None,
+            filters: None,
+            embeds: None,
+        },
+    };
+    mdoc
+}
 
 #[cfg(test)]
 mod tests {
