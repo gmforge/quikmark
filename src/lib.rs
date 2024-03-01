@@ -9,6 +9,7 @@ use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 
@@ -794,6 +795,7 @@ impl SpanRefs {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum Id {
+    None,
     Uid(usize),
     Label(String),
 }
@@ -1117,17 +1119,23 @@ fn nested_list_block<'a>(
         line_ending,
     ))(input)?;
     if let (i, Some((d, index))) = list_tag(i)? {
-        if let Some((_, ad, ah)) = depth_attrs {
+        if let Some((_, ad, attrs)) = depth_attrs {
             if ad.len() == d.len() {
                 if d.len() <= depth.len() {
                     Ok((input, None))
                 } else {
-                    let id = if let Some(label) = ah.get(LABEL) {
+                    let id = if let Some(label) = attrs.get(LABEL) {
                         Id::Label(label.to_string())
+                    } else if let Some(u) = attrs.get(UID) {
+                        if let Ok(uid) = u.parse::<usize>() {
+                            Id::Uid(uid)
+                        } else {
+                            Id::None
+                        }
                     } else {
-                        Id::Uid(1)
+                        Id::None
                     };
-                    if let (i, Some(lb)) = list_block(i, d, index, Some(ah), span_refs)? {
+                    if let (i, Some(lb)) = list_block(i, d, index, Some(attrs), span_refs)? {
                         Ok((i, Some(Box::new((Label::List(id), lb)))))
                     } else {
                         Ok((input, None))
@@ -1140,7 +1148,7 @@ fn nested_list_block<'a>(
             Ok((input, None))
         } else {
             if let (i, Some(lb)) = list_block(i, d, index, None, span_refs)? {
-                Ok((i, Some(Box::new((Label::List(Id::Uid(1)), lb)))))
+                Ok((i, Some(Box::new((Label::List(Id::None), lb)))))
             } else {
                 Ok((input, None))
             }
@@ -1245,6 +1253,7 @@ fn paragraph<'a>(input: &'a str, span_refs: &mut SpanRefs) -> IResult<&'a str, B
     Ok((i, Block::P(None, ss)))
 }
 
+const UID: &'static str = "uid";
 const LABEL: &'static str = "label";
 
 // Div = {
@@ -1259,9 +1268,7 @@ fn blocks<'a>(
     refs: Option<HType>,
     parent_span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, IndexMap<(Label, Option<usize>), Block<'a>>> {
-    let mut list_id = 0;
     let mut code_id = 0;
-    let mut para_id = 0;
     let mut children: IndexMap<(Label, Option<usize>), Block<'a>> = IndexMap::new();
     // WARN: utilizing multispace here would cause lists that start with spaces
     // to look like new lists that start right after a newline, so cannot greedy
@@ -1321,13 +1328,17 @@ fn blocks<'a>(
             let label = if let Some(ref attrs) = &attrs {
                 if let Some(l) = attrs.get(LABEL) {
                     Label::List(Id::Label(l.to_string()))
+                } else if let Some(u) = attrs.get(UID) {
+                    if let Ok(uid) = u.parse::<usize>() {
+                        Label::List(Id::Uid(uid))
+                    } else {
+                        Label::List(Id::None)
+                    }
                 } else {
-                    list_id += 1;
-                    Label::List(Id::Uid(list_id))
+                    Label::List(Id::None)
                 }
             } else {
-                list_id += 1;
-                Label::List(Id::Uid(list_id))
+                Label::List(Id::None)
             };
             let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
@@ -1354,11 +1365,12 @@ fn blocks<'a>(
             children.insert((label, Some(version)), Block::C(attrs, f, c));
         } else if let (input, Block::P(_, ss)) = paragraph(i, parent_span_refs)? {
             i = input;
-            para_id += 1;
-            children.insert(
-                (Label::Paragraph(Id::Uid(para_id)), None),
-                Block::P(attrs, ss),
-            );
+            let mut version: usize = 0;
+            let label = Label::Paragraph(Id::None);
+            while children.contains_key(&(label.clone(), Some(version))) {
+                version += 1;
+            }
+            children.insert((label, Some(version)), Block::P(attrs, ss));
         }
     }
     Ok((i, children))
@@ -1372,15 +1384,18 @@ pub struct Document<'a> {
     pub span_refs: SpanRefs,
     // References to a list of headings within the document
     // pub head_refs: Option<IndexMap<&'a str, Block<'a>>>,
+    pub sections: BTreeSet<String>,
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
 pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     let mut span_refs = SpanRefs::default();
+    let sections: BTreeSet<String> = BTreeSet::new();
     match blocks(input, false, None, &mut span_refs) {
         Ok((_, bs)) => Ok(Document {
             blocks: bs,
             span_refs,
+            sections,
         }),
         Err(e) => Err(Box::from(format!("Unable to parse input: {e:?}"))),
     }
@@ -1394,6 +1409,7 @@ pub fn merge<'a>(_doc: &Document<'a>) -> Document<'a> {
             filters: None,
             embeds: None,
         },
+        sections: BTreeSet::new(),
     };
     mdoc
 }
@@ -1419,7 +1435,7 @@ mod tests {
         assert_eq!(
             ast("line\\\n"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(None, vec![Span::Text("line"), Span::LineBreak("\n")]),
             )]),
         );
@@ -1430,7 +1446,7 @@ mod tests {
         assert_eq!(
             ast("left\\ right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![Span::Text("left"), Span::NBWS(" "), Span::Text("right")]
@@ -1444,7 +1460,7 @@ mod tests {
         assert_eq!(
             ast("left *strong* right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1462,7 +1478,7 @@ mod tests {
         assert_eq!(
             ast("l _*s* e_ r"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1483,7 +1499,7 @@ mod tests {
         assert_eq!(
             ast("l _e1 *s* e2_ r"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1508,7 +1524,7 @@ mod tests {
         assert_eq!(
             ast("l _*s*_ r"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1526,7 +1542,7 @@ mod tests {
         assert_eq!(
             ast("left ``verbatim``=fmt right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1544,7 +1560,7 @@ mod tests {
         assert_eq!(
             ast("left ``verbatim\n right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1562,7 +1578,7 @@ mod tests {
         assert_eq!(
             ast("left ``ver```batim``{format=fmt} right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1584,7 +1600,7 @@ mod tests {
         assert_eq!(
             ast("left `` `verbatim` `` right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1602,7 +1618,7 @@ mod tests {
         assert_eq!(
             ast("left #"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(None, vec![Span::Text("left #")])
             )])
         );
@@ -1613,7 +1629,7 @@ mod tests {
         assert_eq!(
             ast("left # "),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(None, vec![Span::Text("left # ")])
             )])
         );
@@ -1637,7 +1653,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1670,7 +1686,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1697,7 +1713,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![Span::Text("left "), Span::Link("loc", true, vec![], None)],
@@ -1720,7 +1736,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1755,7 +1771,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1778,7 +1794,7 @@ mod tests {
         assert_eq!(
             ast("text-left [*strong-left [_emphasis-center_]\t[+insert-left [^superscript-center^] insert-right+] strong-right*] text-right"),
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1821,7 +1837,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1844,7 +1860,7 @@ mod tests {
         assert_eq!(
             doc,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1867,7 +1883,7 @@ mod tests {
         assert_eq!(
             doc,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
@@ -1923,7 +1939,7 @@ mod tests {
                         Span::Strong(vec![Span::Text("strong")], None)
                     ],
                     IndexMap::from([(
-                        (Label::Paragraph(Id::Uid(1)), None),
+                        (Label::Paragraph(Id::None), Some(0)),
                         Block::P(None, vec![Span::Text("new paragraph")]),
                     )]),
                     SpanRefs {
@@ -1959,7 +1975,7 @@ mod tests {
                                     None,
                                     "div2",
                                     IndexMap::from([(
-                                        (Label::Paragraph(Id::Uid(1)), None),
+                                        (Label::Paragraph(Id::None), Some(0)),
                                         Block::P(None, vec![Span::Text("  line")])
                                     )]),
                                     SpanRefs {
@@ -2047,7 +2063,7 @@ mod tests {
                     None,
                     "div1",
                     IndexMap::from([(
-                        (Label::Paragraph(Id::Uid(1)), None),
+                        (Label::Paragraph(Id::None), Some(0)),
                         Block::P(
                             Some(IndexMap::from([("format", "blockquote")])),
                             vec![Span::Text("test paragraph")],
@@ -2105,7 +2121,7 @@ mod tests {
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     None,
                     IndexMap::from([
@@ -2124,7 +2140,7 @@ mod tests {
                             Block::LI(
                                 vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
                                 Some(Box::new((
-                                    (Label::List(Id::Uid(1))),
+                                    (Label::List(Id::None)),
                                     Block::L(
                                         None,
                                         IndexMap::from([
@@ -2161,7 +2177,7 @@ mod tests {
                                                         Span::Hash(Some(HashOp::NotEqual), "H 4")
                                                     ],
                                                     Some(Box::new((
-                                                        (Label::List(Id::Uid(1))),
+                                                        (Label::List(Id::None)),
                                                         Block::L(
                                                             None,
                                                             IndexMap::from([(
@@ -2224,7 +2240,7 @@ mod tests {
   - l2,3
 - l3"#),
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     Some(IndexMap::from([("k1", "v1")])),
                     IndexMap::from([
@@ -2268,7 +2284,7 @@ mod tests {
                                                 Block::LI(
                                                     vec![Span::Text("l2,2")],
                                                     Some(Box::new((
-                                                        (Label::List(Id::Uid(1))),
+                                                        (Label::List(Id::None)),
                                                         Block::L(
                                                             None,
                                                             IndexMap::from([(
@@ -2323,7 +2339,7 @@ mod tests {
         assert_eq!(
             ast("- l1\n- l2\n  - l2,1\n  - l2,2\n    - l2,2,1\n  - l2,3\n- l3"),
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     None,
                     IndexMap::from([
@@ -2342,7 +2358,7 @@ mod tests {
                             Block::LI(
                                 vec![Span::Text("l2")],
                                 Some(Box::new((
-                                    (Label::List(Id::Uid(1))),
+                                    (Label::List(Id::None)),
                                     Block::L(
                                         None,
                                         IndexMap::from([
@@ -2367,7 +2383,7 @@ mod tests {
                                                 Block::LI(
                                                     vec![Span::Text("l2,2")],
                                                     Some(Box::new((
-                                                        (Label::List(Id::Uid(1))),
+                                                        (Label::List(Id::None)),
                                                         Block::L(
                                                             None,
                                                             IndexMap::from([(
@@ -2422,7 +2438,7 @@ mod tests {
         assert_eq!(
             ast("a) l1\n\n(B) l2\n\n  1. l2,1"),
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     None,
                     IndexMap::from([
@@ -2441,7 +2457,7 @@ mod tests {
                             Block::LI(
                                 vec![Span::Text("l2")],
                                 Some(Box::new((
-                                    Label::List(Id::Uid(1)),
+                                    Label::List(Id::None),
                                     Block::L(
                                         None,
                                         IndexMap::from([(
@@ -2469,7 +2485,7 @@ mod tests {
         assert_eq!(
             ast(": ab\n  alpha\n\n: 12\n  digit\n\n  : iv\n    roman"),
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     None,
                     IndexMap::from([
@@ -2488,7 +2504,7 @@ mod tests {
                             Block::LI(
                                 vec![Span::Text("\n  digit")],
                                 Some(Box::new((
-                                    (Label::List(Id::Uid(1))),
+                                    (Label::List(Id::None)),
                                     Block::L(
                                         None,
                                         IndexMap::from([(
@@ -2512,7 +2528,7 @@ mod tests {
     }
 
     #[test]
-    fn test_block_header_sigleline_unordered_list() {
+    fn test_block_header_singleline_unordered_list() {
         assert_eq!(
             ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
             IndexMap::from([(
@@ -2524,7 +2540,7 @@ mod tests {
                     None,
                     vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                     IndexMap::from([(
-                        (Label::List(Id::Uid(1)), Some(0)),
+                        (Label::List(Id::None), Some(0)),
                         Block::L(
                             None,
                             IndexMap::from([
@@ -2615,7 +2631,7 @@ mod tests {
         assert_eq!(
             ast(": ab\n  - [ ] alpha"),
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     None,
                     IndexMap::from([(
@@ -2626,7 +2642,7 @@ mod tests {
                         Block::LI(
                             vec![],
                             Some(Box::new((
-                                (Label::List(Id::Uid(1))),
+                                (Label::List(Id::None)),
                                 Block::L(
                                     None,
                                     IndexMap::from([(
@@ -2659,7 +2675,7 @@ mod tests {
 - [-10] foxtrot
 - [+10] golf"#),
             IndexMap::from([(
-                (Label::List(Id::Uid(1)), Some(0)),
+                (Label::List(Id::None), Some(0)),
                 Block::L(
                     None,
                     IndexMap::from([
@@ -2775,7 +2791,7 @@ doc > h1 > h2b // No change
                     vec![Span::Text("h1")],
                     IndexMap::from([
                         (
-                            (Label::Paragraph(Id::Uid(1)), None),
+                            (Label::Paragraph(Id::None), Some(0)),
                             Block::P(
                                 None,
                                 vec![Span::Text("doc > h1")]
@@ -2788,7 +2804,7 @@ doc > h1 > h2b // No change
                                 vec![Span::Text("h2a")],
                                 IndexMap::from([
                                     (
-                                        (Label::Paragraph(Id::Uid(1)), None),
+                                        (Label::Paragraph(Id::None), Some(0)),
                                         Block::P(
                                             None,
                                             vec![Span::Text("doc > h1 > h2a")]
@@ -2800,7 +2816,7 @@ doc > h1 > h2b // No change
                                             "d1",
                                             IndexMap::from([
                                                 (
-                                                    (Label::Paragraph(Id::Uid(1)), None),
+                                                    (Label::Paragraph(Id::None), Some(0)),
                                                     Block::P(
                                                         None,
                                                         vec![Span::Text("doc > h1 > h2a > d1")]
@@ -2812,7 +2828,7 @@ doc > h1 > h2b // No change
                                                         vec![Span::Text("h3a")],
                                                         IndexMap::from([
                                                             (
-                                                                (Label::Paragraph(Id::Uid(1)), None),
+                                                                (Label::Paragraph(Id::None), Some(0)),
                                                                 Block::P(
                                                                     None,
                                                                     vec![Span::Text("doc > h1 > h2a > d1 > h3a")]
@@ -2823,7 +2839,7 @@ doc > h1 > h2b // No change
                                                                     None,
                                                                     vec![Span::Text("h4a")],
                                                                     IndexMap::from([(
-                                                                        (Label::Paragraph(Id::Uid(1)), None),
+                                                                        (Label::Paragraph(Id::None), Some(0)),
                                                                         Block::P(
                                                                             None,
                                                                             vec![Span::Text(
@@ -2843,7 +2859,7 @@ doc > h1 > h2b // No change
                                                                     None,
                                                                     vec![Span::Text("h4b")],
                                                                     IndexMap::from([(
-                                                                        (Label::Paragraph(Id::Uid(1)), None),
+                                                                        (Label::Paragraph(Id::None), Some(0)),
                                                                         Block::P(
                                                                             None,
                                                                             vec![Span::Text(
@@ -2874,7 +2890,7 @@ doc > h1 > h2b // No change
                                             }
                                         )
                                     ),(
-                                        (Label::Paragraph(Id::Uid(2)), None),
+                                        (Label::Paragraph(Id::None), Some(1)),
                                         Block::P(
                                             None,
                                             vec![Span::Text("doc > h1 > h2a")]
@@ -2886,7 +2902,7 @@ doc > h1 > h2b // No change
                                             vec![Span::Text("h3b")],
                                             IndexMap::from([
                                                 (
-                                                    (Label::Paragraph(Id::Uid(1)), None),
+                                                    (Label::Paragraph(Id::None), Some(0)),
                                                     Block::P(
                                                         None,
                                                         vec![Span::Text("doc > h1 > h2a > h3b")]
@@ -2898,7 +2914,7 @@ doc > h1 > h2b // No change
                                                         "d2",
                                                         IndexMap::from([
                                                             (
-                                                                (Label::Paragraph(Id::Uid(1)), None),
+                                                                (Label::Paragraph(Id::None), Some(0)),
                                                                 Block::P(
                                                                     None,
                                                                     vec![Span::Text("doc > h1 > h2a > h3b > d2")]
@@ -2909,7 +2925,7 @@ doc > h1 > h2b // No change
                                                                     None,
                                                                     vec![Span::Text("h4b")],
                                                                     IndexMap::from([(
-                                                                        (Label::Paragraph(Id::Uid(1)), None),
+                                                                        (Label::Paragraph(Id::None), Some(0)),
                                                                         Block::P(
                                                                             None,
                                                                             vec![Span::Text(
@@ -2954,14 +2970,14 @@ doc > h1 > h2b // No change
                                 vec![Span::Text("h2b")],
                                 IndexMap::from([
                                     (
-                                        (Label::Paragraph(Id::Uid(1)), None),
+                                        (Label::Paragraph(Id::None), Some(0)),
                                         Block::P(
                                             None,
                                             vec![Span::Text("doc > h1 > h2b")]
                                         ),
                                     ),
                                     (
-                                        (Label::Paragraph(Id::Uid(2)), None),
+                                        (Label::Paragraph(Id::None), Some(1)),
                                         Block::P(
                                             None,
                                             vec![Span::Text(":::\ndoc > h1 > h2b // No change\n")]
@@ -3008,7 +3024,7 @@ doc > h1 > h2b // No change
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
-                (Label::Paragraph(Id::Uid(1)), None),
+                (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
                     vec![
