@@ -1268,7 +1268,9 @@ fn blocks<'a>(
     refs: Option<HType>,
     parent_span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, IndexMap<(Label, Option<usize>), Block<'a>>> {
-    let mut code_id = 0;
+    let mut some_list_id = 0;
+    let mut some_para_id = 0;
+    let mut some_code_id = 0;
     let mut children: IndexMap<(Label, Option<usize>), Block<'a>> = IndexMap::new();
     // WARN: utilizing multispace here would cause lists that start with spaces
     // to look like new lists that start right after a newline, so cannot greedy
@@ -1325,52 +1327,63 @@ fn blocks<'a>(
             );
         } else if let Ok((input, Block::L(_, ls))) = list(i, parent_span_refs) {
             i = input;
-            let label = if let Some(ref attrs) = &attrs {
+            let (label, mut version) = if let Some(ref attrs) = &attrs {
                 if let Some(l) = attrs.get(LABEL) {
-                    Label::List(Id::Label(l.to_string()))
+                    (Label::List(Id::Label(l.to_string())), 0)
                 } else if let Some(u) = attrs.get(UID) {
                     if let Ok(uid) = u.parse::<usize>() {
-                        Label::List(Id::Uid(uid))
+                        (Label::List(Id::Uid(uid)), 0)
                     } else {
-                        Label::List(Id::None)
+                        let label_version = (Label::List(Id::None), some_list_id);
+                        some_list_id += 1;
+                        label_version
                     }
                 } else {
-                    Label::List(Id::None)
+                    let label_version = (Label::List(Id::None), some_list_id);
+                    some_list_id += 1;
+                    label_version
                 }
             } else {
-                Label::List(Id::None)
+                let label_version = (Label::List(Id::None), some_list_id);
+                some_list_id += 1;
+                label_version
             };
-            let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
                 version += 1;
             }
             children.insert((label, Some(version)), Block::L(attrs, ls));
         } else if let Ok((input, Block::C(_, f, c))) = code(i) {
             i = input;
-            let label = if let Some(ref attrs) = &attrs {
+            let (label, mut version) = if let Some(ref attrs) = &attrs {
                 if let Some(l) = attrs.get(LABEL) {
-                    Label::Code(Id::Label(l.to_string()))
+                    (Label::Code(Id::Label(l.to_string())), 0)
+                } else if let Some(u) = attrs.get(UID) {
+                    if let Ok(uid) = u.parse::<usize>() {
+                        (Label::Code(Id::Uid(uid)), 0)
+                    } else {
+                        let label_version = (Label::Code(Id::None), some_code_id);
+                        some_code_id += 1;
+                        label_version
+                    }
                 } else {
-                    code_id += 1;
-                    Label::Code(Id::Uid(code_id))
+                    let label_version = (Label::Code(Id::None), some_code_id);
+                    some_code_id += 1;
+                    label_version
                 }
             } else {
-                code_id += 1;
-                Label::Code(Id::Uid(code_id))
+                let label_version = (Label::Code(Id::None), some_code_id);
+                some_code_id += 1;
+                label_version
             };
-            let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
                 version += 1;
             }
             children.insert((label, Some(version)), Block::C(attrs, f, c));
         } else if let (input, Block::P(_, ss)) = paragraph(i, parent_span_refs)? {
             i = input;
-            let mut version: usize = 0;
             let label = Label::Paragraph(Id::None);
-            while children.contains_key(&(label.clone(), Some(version))) {
-                version += 1;
-            }
-            children.insert((label, Some(version)), Block::P(attrs, ss));
+            children.insert((label, Some(some_para_id)), Block::P(attrs, ss));
+            some_para_id += 1;
         }
     }
     Ok((i, children))
@@ -2012,7 +2025,7 @@ mod tests {
                     None,
                     "div---1",
                     IndexMap::from([(
-                        (Label::Code(Id::Uid(1)), Some(0)),
+                        (Label::Code(Id::None), Some(0)),
                         Block::C(None, Some("code"), "line1\n````\nline3"),
                     )]),
                     SpanRefs {
@@ -2035,7 +2048,7 @@ mod tests {
                     None,
                     "div1",
                     IndexMap::from([(
-                        (Label::Code(Id::Uid(1)), Some(0)),
+                        (Label::Code(Id::None), Some(0)),
                         Block::C(
                             Some(IndexMap::from([("format", "code")])),
                             Some("fmt"),
