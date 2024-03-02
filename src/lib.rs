@@ -196,13 +196,13 @@ fn number(input: &str) -> IResult<&str, &str> {
     Ok((i, c))
 }
 
-fn single_non_number(input: &str) -> IResult<&str, &str> {
+fn anychar_as_str(input: &str) -> IResult<&str, &str> {
     let (i, (c, _)) = consumed(anychar)(input)?;
     Ok((i, c))
 }
 
 fn filter_out_numbers(input: &str) -> IResult<&str, Vec<&str>> {
-    let (i, v) = many0(preceded(opt(number), single_non_number))(input)?;
+    let (i, v) = many0(preceded(opt(number), anychar_as_str))(input)?;
     return Ok((i, v));
 }
 
