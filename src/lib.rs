@@ -805,11 +805,11 @@ pub enum LType {
     Definition,
     // (e), e), e.
     Ordered,
-    // - [ ], + [ ], * [ ]
+    // -, +, *
+    // Unordered with task:
+    //   - [ ], + [ ], * [ ]
     // contents may be a checkbox indicated with space, x, or X
     // or input field indicated with digit1 or ratio (digit1:digit1)
-    Task,
-    // -, +, *
     Unordered,
 }
 
@@ -968,6 +968,21 @@ fn code(input: &str) -> IResult<&str, Block<'_>> {
     Ok((i, Block::C(None, format, content)))
 }
 
+// NOTE: Changed list item concept where tasks are values
+// of an unordered list item types.
+// - [ ] parent unordered task list item
+//   - [ ] child unordered task list item
+// - unordered (empty task) list item
+// A unordered tasked list item may be indexed by specifying
+// it without a "task" value during a merge to access any
+// child list items, without modifying the parent unordered
+// task list item.
+// - parent unordered task list item
+//   - [x] child unordered task list item
+// We still need a convenient notation for clearing out
+// values of definition, ordered and unordered task list
+// items. Maybe use an escaped space or return to represent null?
+
 // RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 // RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
 //    // : <<Locator>>
@@ -981,19 +996,19 @@ fn code(input: &str) -> IResult<&str, Block<'_>> {
 //    // -, +, *
 //    Unordered(&'a str),
 //}
-// Index(List Type, List Markdown Notation, List Index Value)
-pub struct Index<'a>(LType, &'a str, &'a str);
+// Index(List Type, List Markdown Notation, List Index or Value Option)
+pub struct Index<'a>(LType, &'a str, Option<&'a str>);
 
 // Definition = { ": " ~ Field }
 fn definition(input: &str) -> IResult<&str, Index> {
     let (i, d) = preceded(tuple((tag(":"), space1)), not_line_ending)(input)?;
-    Ok((i, Index(LType::Definition, ":", d)))
+    Ok((i, Index(LType::Definition, ":", Some(d))))
 }
 
 // Definition = { ": " ~ Field }
 fn definition_simple(input: &str) -> IResult<&str, Index> {
     let (i, _d) = tag(":")(input)?;
-    Ok((i, Index(LType::Definition, ":", "")))
+    Ok((i, Index(LType::Definition, ":", None)))
 }
 
 // Ordered    = { (ASCII_DIGIT+ | RomanLower+ | RomanUpper+ | ASCII_ALPHA_LOWER+ | ASCII_ALPHA_UPPER+) ~ ("." | ")") }
@@ -1003,13 +1018,17 @@ fn ordered(input: &str) -> IResult<&str, Index> {
         consumed(alt((value(false, alpha1), value(true, digit1)))),
         alt((tag(")"), tag("."))),
     ))(input)?;
-    if start_tag == Some("(") && end_tag != ")" {
-        return Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Alt,
-        )));
+    if start_tag == Some("(") {
+        if end_tag != ")" {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alt,
+            )));
+        } else {
+            return Ok((i, Index(LType::Ordered, "(", Some(o))));
+        }
     }
-    Ok((i, Index(LType::Ordered, end_tag, o)))
+    Ok((i, Index(LType::Ordered, end_tag, Some(o))))
 }
 
 fn ratio(input: &str) -> IResult<&str, &str> {
@@ -1017,18 +1036,22 @@ fn ratio(input: &str) -> IResult<&str, &str> {
     Ok((i, r))
 }
 
-fn task(input: &str) -> IResult<&str, Index> {
-    let (i, (l, task_value)) = tuple((
-        terminated(is_a("-+*"), tag(" [")),
+fn task(input: &str) -> IResult<&str, &str> {
+    preceded(
+        tag(" ["),
         terminated(alt((tag(" "), tag("x"), tag("X"), ratio, number)), tag("]")),
-    ))(input)?;
-    Ok((i, Index(LType::Task, l, task_value)))
+    )(input)
 }
 
 // Unordered  = { "-" | "+" | "*" }
 fn unordered(input: &str) -> IResult<&str, Index> {
+    let (i, (u, t)) = tuple((alt((tag("*"), tag("-"), tag("+"))), opt(task)))(input)?;
+    Ok((i, (Index(LType::Unordered, u, t))))
+}
+// Unordered  = { "-" | "+" | "*" }
+fn unordered_simple(input: &str) -> IResult<&str, Index> {
     let (i, u) = alt((tag("*"), tag("-"), tag("+")))(input)?;
-    Ok((i, (Index(LType::Unordered, u, ""))))
+    Ok((i, (Index(LType::Unordered, u, None))))
 }
 
 fn list_tag(input: &str) -> IResult<&str, Option<(&str, Index)>> {
@@ -1036,7 +1059,6 @@ fn list_tag(input: &str) -> IResult<&str, Option<(&str, Index)>> {
         many0(line_ending),
         space0,
         alt((
-            tuple((task, space1)),
             tuple((unordered, space1)),
             tuple((ordered, space1)),
             tuple((definition, peek(line_ending))),
@@ -1053,7 +1075,7 @@ fn is_list_singleline_tag(new: bool, input: &str) -> IResult<&str, bool> {
     if let (input, Some((_, _, _idx, _))) = opt(tuple((
         line_ending,
         cond(new, space0),
-        alt((task, unordered, ordered, definition_simple)),
+        alt((unordered_simple, ordered, definition_simple)),
         space1,
     )))(input)?
     {
@@ -1174,21 +1196,21 @@ fn list_item<'a>(
     let (input, ss) = span_refs.spans(input, None, Some(true));
     let (input, nlb) = nested_list_block(input, depth, span_refs)?;
     match index {
-        Index(LType::Ordered, n, s) => Ok((
+        Index(LType::Ordered, n, Some(s)) => Ok((
             input,
             (
                 Label::ListItem(LType::Ordered, Id::Label(s.to_string())),
                 Block::LI(n, ss, nlb),
             ),
         )),
-        Index(LType::Definition, n, s) => Ok((
+        Index(LType::Definition, n, Some(s)) => Ok((
             input,
             (
                 Label::ListItem(LType::Definition, Id::Label(span_label(&hashtags(vec![s])))),
                 Block::LI(n, ss, nlb),
             ),
         )),
-        Index(LType::Unordered, n, _) => Ok((
+        Index(LType::Unordered, n, None) => Ok((
             input,
             (
                 Label::ListItem(
@@ -1198,16 +1220,17 @@ fn list_item<'a>(
                 Block::LI(n, ss, nlb),
             ),
         )),
-        Index(LType::Task, n, v) => Ok((
+        Index(LType::Unordered, n, Some(v)) => Ok((
             input,
             (
                 Label::ListItem(
-                    LType::Task,
+                    LType::Unordered,
                     Id::Label(span_label(&hashtags(contents(&ss, true)))),
                 ),
                 Block::LI(n, vec![Span::Text(v)], nlb),
             ),
         )),
+        _ => unreachable!(),
     }
 }
 
@@ -2476,7 +2499,7 @@ mod tests {
                                 Some(0)
                             ),
                             Block::LI(
-                                ")",
+                                "(",
                                 vec![Span::Text("l2")],
                                 Some(Box::new((
                                     Label::List(Id::None),
@@ -2674,7 +2697,7 @@ mod tests {
                                     IndexMap::from([(
                                         (
                                             Label::ListItem(
-                                                LType::Task,
+                                                LType::Unordered,
                                                 Id::Label("alpha".to_string())
                                             ),
                                             Some(0)
@@ -2707,49 +2730,49 @@ mod tests {
                     IndexMap::from([
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("alpha".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("alpha".to_string())),
                                 Some(0)
                             ),
                             Block::LI("-", vec![Span::Text(" ")], None)
                         ),
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("bravo".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("bravo".to_string())),
                                 Some(0)
                             ),
                             Block::LI("*", vec![Span::Text("x")], None)
                         ),
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("charlie".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("charlie".to_string())),
                                 Some(0)
                             ),
                             Block::LI("+", vec![Span::Text("X")], None)
                         ),
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("delta".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("delta".to_string())),
                                 Some(0)
                             ),
                             Block::LI("-", vec![Span::Text("0:1")], None)
                         ),
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("echo".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("echo".to_string())),
                                 Some(0)
                             ),
                             Block::LI("-", vec![Span::Text("10")], None)
                         ),
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("foxtrot".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("foxtrot".to_string())),
                                 Some(0)
                             ),
                             Block::LI("-", vec![Span::Text("-10")], None)
                         ),
                         (
                             (
-                                Label::ListItem(LType::Task, Id::Label("golf".to_string())),
+                                Label::ListItem(LType::Unordered, Id::Label("golf".to_string())),
                                 Some(0)
                             ),
                             Block::LI("-", vec![Span::Text("+10")], None)
