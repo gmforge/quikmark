@@ -146,7 +146,7 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: IndexMap<&'a str, &'a str>) -> 
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct HashFilter {
     index: String,
     op: HashOp,
@@ -458,7 +458,7 @@ fn locator(input: &str) -> IResult<&str, &str> {
     Ok((i, l))
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub struct SpanRefs {
     tags: Option<IndexMap<String, Vec<HashTag>>>,
     filters: Option<Vec<HashFilter>>,
@@ -975,13 +975,14 @@ fn code(input: &str) -> IResult<&str, Block<'_>> {
 // - unordered (empty task) list item
 // A unordered tasked list item may be indexed by specifying
 // it without a "task" value during a merge to access any
-// child list items, without modifying the parent unordered
-// task list item.
+// child list items, without modifying the value for the
+// unordered parent task list item.
 // - parent unordered task list item
 //   - [x] child unordered task list item
 // We still need a convenient notation for clearing out
 // values of definition, ordered and unordered task list
-// items. Maybe use an escaped space or return to represent null?
+// items. Maybe use an escaped space or return to represent
+// an empty value?
 
 // RomanLower = { "i" | "v" | "x" | "l" | "c" | "d" | "m" }
 // RomanUpper = { "I" | "V" | "X" | "L" | "C" | "D" | "M" }
@@ -1436,16 +1437,218 @@ pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     }
 }
 
-pub fn merge<'a>(_doc: &Document<'a>) -> Document<'a> {
-    let mdoc = Document {
-        blocks: IndexMap::new(),
-        span_refs: SpanRefs {
-            tags: None,
-            filters: None,
-            embeds: None,
-        },
-    };
-    mdoc
+// The following reduce functionality will merge the fields on matching keys
+// within a document while making a mutable copy.
+
+fn merge_attrs<'a>(source: &mut IndexMap<&'a str, &'a str>, patch: &IndexMap<&'a str, &'a str>) {
+    for (k, v) in patch {
+        if source.contains_key(k) {
+            source[k] = v;
+        }
+    }
+}
+
+// TODO: finish merge_refs
+fn merge_refs(_source: &mut SpanRefs, _patch: &SpanRefs) {}
+
+fn merge_blocks<'a>(
+    source: &mut IndexMap<(Label, Option<usize>), Block<'a>>,
+    patch: &IndexMap<(Label, Option<usize>), Block<'a>>,
+) {
+    for ((label, _version), patch_block) in patch.iter() {
+        // May need to add match to use versions for paragraphs
+        if let Some(source_block) = source.get_mut(&(label.clone(), None)) {
+            merge_block(source_block, patch_block);
+        } else {
+            // TODO: finish!
+            // copy_reduce_block(source, patch_block);
+            // Copy reduce the patching block into source
+            match patch_block {
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
+    match (source, patch) {
+        // Div
+        (Block::D(attrs1, _name1, blocks1, refs1), Block::D(attrs2, _name2, blocks2, refs2)) => {
+            match (attrs1, attrs2) {
+                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                (a @ None, Some(attrs2)) => {
+                    let mut attrs = IndexMap::new();
+                    merge_attrs(&mut attrs, attrs2);
+                    a.replace(attrs);
+                }
+                _ => {}
+            }
+            // names have to be the same so leave untouched
+            merge_blocks(blocks1, blocks2);
+            merge_refs(refs1, refs2);
+        }
+
+        // Heading
+        (Block::H(attrs1, _value1, blocks1, refs1), Block::H(attrs2, _value2, blocks2, refs2)) => {
+            match (attrs1, attrs2) {
+                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                (a @ None, Some(attrs2)) => {
+                    let mut attrs = IndexMap::new();
+                    merge_attrs(&mut attrs, attrs2);
+                    a.replace(attrs);
+                }
+                _ => {}
+            }
+            // values have to be the same so leave untouched
+            merge_blocks(blocks1, blocks2);
+            merge_refs(refs1, refs2);
+        }
+
+        // List
+        (Block::L(attrs1, listitems1), Block::L(attrs2, listitems2)) => {
+            match (attrs1, attrs2) {
+                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                (a @ None, Some(attrs2)) => {
+                    let mut attrs = IndexMap::new();
+                    merge_attrs(&mut attrs, attrs2);
+                    a.replace(attrs);
+                }
+                _ => {}
+            }
+            merge_blocks(listitems1, listitems2);
+        }
+
+        // TODO: finish
+        // List Item
+        (Block::LI(symbol1, _value1, list1), Block::LI(symbol2, value2, list2)) => {}
+
+        // TODO: finish
+        // Code
+        (Block::C(_attrs1, _format1, _value1), Block::C(attrs2, format2, value2)) => {}
+
+        // TODO: finish
+        // Paragraph
+        (Block::P(_attrs1, _value1), Block::P(attrs2, value2)) => {}
+        _ => unreachable!(),
+    }
+}
+
+fn copy_attrs<'a>(
+    source: &Option<IndexMap<&'a str, &'a str>>,
+) -> Option<IndexMap<&'a str, &'a str>> {
+    if let Some(attrs) = source {
+        let mut replica = IndexMap::new();
+        for (k, v) in attrs.iter() {
+            replica[*k] = *v;
+        }
+        Some(replica)
+    } else {
+        None
+    }
+}
+
+fn copy_spans<'a>(source: &Vec<Span<'a>>) -> Vec<Span<'a>> {
+    let mut ss = Vec::new();
+    for s in source.iter() {
+        match &s {
+            Span::LineBreak(v) => ss.push(Span::LineBreak(v)),
+            Span::NBWS(v) => ss.push(Span::NBWS(v)),
+            Span::Esc(v) => ss.push(Span::Esc(v)),
+            Span::Text(v) => ss.push(Span::Text(v)),
+            Span::Hash(op, v) => ss.push(Span::Hash(op.clone(), v)),
+            Span::EOM => ss.push(Span::EOM),
+            Span::Link(loc, embedded, vs, attrs) => ss.push(Span::Link(
+                loc,
+                embedded.clone(),
+                copy_spans(&vs),
+                copy_attrs(attrs),
+            )),
+            Span::Verbatim(v, format, attrs) => {
+                ss.push(Span::Verbatim(v, *format, copy_attrs(attrs)))
+            }
+            Span::Strong(vs, attrs) => ss.push(Span::Strong(copy_spans(vs), copy_attrs(attrs))),
+            Span::Emphasis(vs, attrs) => ss.push(Span::Emphasis(copy_spans(vs), copy_attrs(attrs))),
+            Span::Superscript(vs, attrs) => {
+                ss.push(Span::Superscript(copy_spans(vs), copy_attrs(attrs)))
+            }
+            Span::Subscript(vs, attrs) => {
+                ss.push(Span::Subscript(copy_spans(vs), copy_attrs(attrs)))
+            }
+            Span::Highlight(vs, attrs) => {
+                ss.push(Span::Highlight(copy_spans(vs), copy_attrs(attrs)))
+            }
+            Span::Insert(vs, attrs) => ss.push(Span::Insert(copy_spans(vs), copy_attrs(attrs))),
+            Span::Delete(vs, attrs) => ss.push(Span::Delete(copy_spans(vs), copy_attrs(attrs))),
+        }
+    }
+    ss
+}
+
+fn copy_reduce_blocks<'a>(
+    source: &IndexMap<(Label, Option<usize>), Block<'a>>,
+) -> IndexMap<(Label, Option<usize>), Block<'a>> {
+    let mut blocks: IndexMap<(Label, Option<usize>), Block<'a>> = IndexMap::new();
+    for ((label, _version), source_block) in source.iter() {
+        if let Some(block) = blocks.get_mut(&(label.clone(), None)) {
+            merge_block(block, source_block);
+        } else {
+            let block = match *source_block {
+                // Div
+                Block::D(ref attrs, ref name, ref blocks, ref refs) => {
+                    let blocks = copy_reduce_blocks(&blocks);
+                    Block::D(copy_attrs(&attrs), name, blocks, refs.clone())
+                }
+
+                // Heading
+                Block::H(ref attrs, ref value, ref blocks, ref refs) => {
+                    let blocks = copy_reduce_blocks(&blocks);
+                    Block::H(copy_attrs(&attrs), copy_spans(&value), blocks, refs.clone())
+                }
+
+                // List
+                Block::L(ref attrs, ref listitems) => {
+                    let listitems = copy_reduce_blocks(&listitems);
+                    Block::L(copy_attrs(attrs), listitems)
+                }
+
+                // List Item
+                Block::LI(symbol, ref value, ref list) => {
+                    let list = if let Some(list) = list {
+                        if let (label, Block::L(ref attrs, ref listitems)) = list.as_ref() {
+                            let listitems = copy_reduce_blocks(&listitems);
+                            Some(Box::new((
+                                label.clone(),
+                                Block::L(copy_attrs(&attrs), listitems),
+                            )))
+                        } else {
+                            // unreachable!()
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    Block::LI(symbol, copy_spans(&value), list)
+                }
+
+                // Code
+                Block::C(ref attrs, format, ref value) => {
+                    Block::C(copy_attrs(&attrs), format, value)
+                }
+
+                // Paragraph
+                Block::P(ref attrs, ref value) => Block::P(copy_attrs(&attrs), copy_spans(&value)),
+            };
+            blocks.insert((label.clone(), None), block);
+        }
+    }
+    blocks
+}
+
+pub fn copy_reduce<'a>(doc: &Document<'a>) -> Document<'a> {
+    Document {
+        blocks: copy_reduce_blocks(&doc.blocks),
+        span_refs: doc.span_refs.clone(),
+    }
 }
 
 #[cfg(test)]
