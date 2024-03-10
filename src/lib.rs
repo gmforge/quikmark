@@ -1500,6 +1500,10 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
                 _ => {}
             }
             // values have to be the same so leave untouched
+            //if !value2.is_empty() {
+            //    value1.clear();
+            //    value1.append(&mut copy_spans(&value2));
+            //}
             merge_blocks(blocks1, blocks2);
             merge_refs(refs1, refs2);
         }
@@ -1518,17 +1522,76 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
             merge_blocks(listitems1, listitems2);
         }
 
-        // TODO: finish
         // List Item
-        (Block::LI(symbol1, _value1, list1), Block::LI(symbol2, value2, list2)) => {}
+        (Block::LI(_symbol1, value1, list1), Block::LI(_symbol2, value2, list2)) => {
+            // Keep source symbol
+            if !value2.is_empty() {
+                value1.clear();
+                value1.append(&mut copy_spans(&value2));
+            }
+            match (list1, list2) {
+                (Some(box1), Some(box2)) => {
+                    if let (_, Block::L(attrs1, l1)) = box1.as_mut() {
+                        if let (_, Block::L(attrs2, l2)) = box2.as_ref() {
+                            match (attrs1, attrs2) {
+                                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                                (a @ None, Some(attrs2)) => {
+                                    let mut attrs = IndexMap::new();
+                                    merge_attrs(&mut attrs, attrs2);
+                                    a.replace(attrs);
+                                }
+                                _ => {}
+                            }
+                            merge_blocks(l1, l2);
+                        }
+                    }
+                }
+                (a @ None, Some(box2)) => {
+                    if let (label, Block::L(attrs2, l2)) = box2.as_ref() {
+                        a.replace(Box::new((
+                            label.clone(),
+                            Block::L(copy_attrs(attrs2), copy_reduce_blocks(l2)),
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
 
-        // TODO: finish
         // Code
-        (Block::C(_attrs1, _format1, _value1), Block::C(attrs2, format2, value2)) => {}
+        (Block::C(attrs1, format1, _value1), Block::C(attrs2, format2, _value2)) => {
+            match (attrs1, attrs2) {
+                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                (a @ None, Some(attrs2)) => {
+                    let mut attrs = IndexMap::new();
+                    merge_attrs(&mut attrs, attrs2);
+                    a.replace(attrs);
+                }
+                _ => {}
+            }
+            if let Some(f) = format2 {
+                format1.replace(f);
+            }
+            // TODO: Not sure how to replace &mut value1 with &value2, may need to change the type
+            // value1 = value2;
+        }
 
-        // TODO: finish
         // Paragraph
-        (Block::P(_attrs1, _value1), Block::P(attrs2, value2)) => {}
+        (Block::P(attrs1, value1), Block::P(attrs2, value2)) => {
+            match (attrs1, attrs2) {
+                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                (a @ None, Some(attrs2)) => {
+                    let mut attrs = IndexMap::new();
+                    merge_attrs(&mut attrs, attrs2);
+                    a.replace(attrs);
+                }
+                _ => {}
+            }
+            if !value2.is_empty() {
+                value1.clear();
+                value1.append(&mut copy_spans(&value2));
+            }
+        }
         _ => unreachable!(),
     }
 }
