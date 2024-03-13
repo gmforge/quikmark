@@ -825,7 +825,8 @@ pub enum LType {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum Label {
     Div(Id),
-    Heading(HType, Id),
+
+    Heading(HRel, Id),
     List(Id),
     ListItem(LType, Id),
     Code(Id),
@@ -859,6 +860,8 @@ pub enum Block<'a> {
     H(
         // Attributes
         Option<IndexMap<&'a str, &'a str>>,
+        // Heading Type
+        HType,
         // contents made up of nested Spans
         Vec<Span<'a>>,
         // List of next level contained headings and other blocks
@@ -905,6 +908,7 @@ static HTYPE: phf::Map<&'static str, HType> = phf_map! {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub enum HType {
+    None = 0,
     H1,
     H2,
     H3,
@@ -912,6 +916,10 @@ pub enum HType {
     H5,
     H6,
 }
+
+// How Many headings different 1-6
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
+pub struct HRel(usize);
 
 fn div_start(input: &str) -> IResult<&str, &str> {
     preceded(tuple((tag(":::"), space1)), field)(input)
@@ -926,7 +934,7 @@ fn head_start(input: &str) -> IResult<&str, HType> {
     if let Some(level) = HTYPE.get(htag) {
         Ok((i, *level))
     } else {
-        Ok((i, HType::H6))
+        Ok((i, HType::None))
     }
 }
 
@@ -1292,7 +1300,7 @@ const LABEL: &'static str = "label";
 fn blocks<'a>(
     input: &'a str,
     divs: bool,
-    refs: Option<HType>,
+    refs: HType,
     parent_span_refs: &mut SpanRefs,
 ) -> IResult<&'a str, IndexMap<(Label, Option<usize>), Block<'a>>> {
     let mut some_list_id = 0;
@@ -1332,25 +1340,24 @@ fn blocks<'a>(
                 Block::D(attrs, name, div_bs, span_refs),
             );
         } else if let Ok((input, Some(hl))) = opt(head_start)(i) {
-            if let Some(level) = refs {
-                if level >= hl {
-                    // Do NOT consume input until can start new heading block
-                    return Ok((i, children));
-                }
+            if refs >= hl {
+                // Do NOT consume input until can start new heading block
+                return Ok((i, children));
             }
             let mut span_refs = SpanRefs::default();
             let (input, head_spans) = span_refs.spans(input, None, Some(false));
-            let (input, head_blocks) = blocks(input, divs, Some(hl), &mut span_refs)?;
+            let (input, head_blocks) = blocks(input, divs, hl, &mut span_refs)?;
             i = input;
             let head_index = span_label(&hashtags(contents(&head_spans, false)));
-            let label = Label::Heading(hl, Id::Label(head_index));
+            let label =
+                Label::Heading(HRel((hl as usize) - (refs as usize)), Id::Label(head_index));
             let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
                 version += 1;
             }
             children.insert(
                 (label, Some(version)),
-                Block::H(attrs, head_spans, head_blocks, span_refs),
+                Block::H(attrs, hl, head_spans, head_blocks, span_refs),
             );
         } else if let Ok((input, Block::L(_, ls))) = list(i, parent_span_refs) {
             i = input;
@@ -1428,7 +1435,7 @@ pub struct Document<'a> {
 // Document = { Block* ~ NEWLINE* ~ EOI }
 pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     let mut span_refs = SpanRefs::default();
-    match blocks(input, false, None, &mut span_refs) {
+    match blocks(input, false, HType::None, &mut span_refs) {
         Ok((_, bs)) => Ok(Document {
             blocks: bs,
             span_refs,
@@ -1489,7 +1496,10 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
         }
 
         // Heading
-        (Block::H(attrs1, _value1, blocks1, refs1), Block::H(attrs2, _value2, blocks2, refs2)) => {
+        (
+            Block::H(attrs1, _htype1, _value1, blocks1, refs1),
+            Block::H(attrs2, _htype2, _value2, blocks2, refs2),
+        ) => {
             match (attrs1, attrs2) {
                 (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
                 (a @ None, Some(attrs2)) => {
@@ -1499,6 +1509,7 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
                 }
                 _ => {}
             }
+            // Keep heading types same as original
             // values have to be the same so leave untouched
             //if !value2.is_empty() {
             //    value1.clear();
@@ -1663,9 +1674,15 @@ fn copy_reduce_blocks<'a>(
                 }
 
                 // Heading
-                Block::H(ref attrs, ref value, ref blocks, ref refs) => {
+                Block::H(ref attrs, htype, ref value, ref blocks, ref refs) => {
                     let blocks = copy_reduce_blocks(&blocks);
-                    Block::H(copy_attrs(&attrs), copy_spans(&value), blocks, refs.clone())
+                    Block::H(
+                        copy_attrs(&attrs),
+                        htype,
+                        copy_spans(&value),
+                        blocks,
+                        refs.clone(),
+                    )
                 }
 
                 // List
@@ -2206,11 +2223,12 @@ mod tests {
             ast("## [*strong heading*]"),
             IndexMap::from([(
                 (
-                    Label::Heading(HType::H2, Id::Label("strong-heading".to_string())),
+                    Label::Heading(HRel(2), Id::Label("strong-heading".to_string())),
                     Some(0)
                 ),
                 Block::H(
                     None,
+                    HType::H2,
                     vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                     IndexMap::new(),
                     SpanRefs {
@@ -2229,11 +2247,12 @@ mod tests {
             ast("## header\nnext line [*strong*]\n\nnew paragraph"),
             IndexMap::from([(
                 (
-                    Label::Heading(HType::H2, Id::Label("header-next-line-strong".to_string())),
+                    Label::Heading(HRel(2), Id::Label("header-next-line-strong".to_string())),
                     Some(0)
                 ),
                 Block::H(
                     None,
+                    HType::H2,
                     vec![
                         Span::Text("header\nnext line "),
                         Span::Strong(vec![Span::Text("strong")], None)
@@ -2263,11 +2282,12 @@ mod tests {
                     "div1",
                     IndexMap::from([(
                         (
-                            Label::Heading(HType::H2, Id::Label("strong-heading".to_string())),
+                            Label::Heading(HRel(2), Id::Label("strong-heading".to_string())),
                             Some(0)
                         ),
                         Block::H(
                             None,
+                            HType::H2,
                             vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                             IndexMap::from([(
                                 (Label::Div(Id::Label("div2".to_string())), Some(0)),
@@ -2845,11 +2865,12 @@ mod tests {
             ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
             IndexMap::from([(
                 (
-                    Label::Heading(HType::H2, Id::Label("strong-heading".to_string())),
+                    Label::Heading(HRel(2), Id::Label("strong-heading".to_string())),
                     Some(0)
                 ),
                 Block::H(
                     None,
+                    HType::H2,
                     vec![Span::Strong(vec![Span::Text("strong heading")], None)],
                     IndexMap::from([(
                         (Label::List(Id::None), Some(0)),
@@ -2920,11 +2941,12 @@ mod tests {
             ast("## [*strong heading\n  - l1*]\n  - l2"),
             IndexMap::from([(
                 (
-                    Label::Heading(HType::H2, Id::Label("strong-heading-l1-l2".to_string())),
+                    Label::Heading(HRel(2), Id::Label("strong-heading-l1-l2".to_string())),
                     Some(0)
                 ),
                 Block::H(
                     None,
+                    HType::H2,
                     vec![
                         Span::Strong(vec![Span::Text("strong heading\n  - l1")], None),
                         Span::Text("\n  - l2")
@@ -3100,9 +3122,10 @@ doc > h1 > h2b // No change
         assert_eq!(
             doc,
             IndexMap::from([(
-                (Label::Heading(HType::H1, Id::Label("h1".to_string())), Some(0)),
+                (Label::Heading(HRel(1), Id::Label("h1".to_string())), Some(0)),
                 Block::H(
                     None,
+                    HType::H1,
                     vec![Span::Text("h1")],
                     IndexMap::from([
                         (
@@ -3113,9 +3136,10 @@ doc > h1 > h2b // No change
                             )
                         ),
                         (
-                            (Label::Heading(HType::H2, Id::Label("h2a".to_string())), Some(0)),
+                            (Label::Heading(HRel(1), Id::Label("h2a".to_string())), Some(0)),
                             Block::H(
                                 None,
+                                HType::H2,
                                 vec![Span::Text("h2a")],
                                 IndexMap::from([
                                     (
@@ -3137,9 +3161,10 @@ doc > h1 > h2b // No change
                                                         vec![Span::Text("doc > h1 > h2a > d1")]
                                                     )
                                                 ),(
-                                                    (Label::Heading(HType::H3, Id::Label("h3a".to_string())), Some(0)),
+                                                    (Label::Heading(HRel(1), Id::Label("h3a".to_string())), Some(0)),
                                                     Block::H(
                                                         None,
+                                                        HType::H3,
                                                         vec![Span::Text("h3a")],
                                                         IndexMap::from([
                                                             (
@@ -3149,9 +3174,10 @@ doc > h1 > h2b // No change
                                                                     vec![Span::Text("doc > h1 > h2a > d1 > h3a")]
                                                                 )
                                                             ),(
-                                                                (Label::Heading(HType::H4, Id::Label("h4a".to_string())), Some(0)),
+                                                                (Label::Heading(HRel(1), Id::Label("h4a".to_string())), Some(0)),
                                                                 Block::H(
                                                                     None,
+                                                                    HType::H4,
                                                                     vec![Span::Text("h4a")],
                                                                     IndexMap::from([(
                                                                         (Label::Paragraph(Id::None), Some(0)),
@@ -3169,9 +3195,10 @@ doc > h1 > h2b // No change
                                                                     }
                                                                 )
                                                             ),(
-                                                                (Label::Heading(HType::H4, Id::Label("h4b".to_string())), Some(0)),
+                                                                (Label::Heading(HRel(1), Id::Label("h4b".to_string())), Some(0)),
                                                                 Block::H(
                                                                     None,
+                                                                    HType::H4,
                                                                     vec![Span::Text("h4b")],
                                                                     IndexMap::from([(
                                                                         (Label::Paragraph(Id::None), Some(0)),
@@ -3211,9 +3238,10 @@ doc > h1 > h2b // No change
                                             vec![Span::Text("doc > h1 > h2a")]
                                         ),
                                     ),(
-                                        (Label::Heading(HType::H3, Id::Label("h3b".to_string())), Some(0)),
+                                        (Label::Heading(HRel(1), Id::Label("h3b".to_string())), Some(0)),
                                         Block::H(
                                             None,
+                                            HType::H3,
                                             vec![Span::Text("h3b")],
                                             IndexMap::from([
                                                 (
@@ -3235,9 +3263,10 @@ doc > h1 > h2b // No change
                                                                     vec![Span::Text("doc > h1 > h2a > h3b > d2")]
                                                                 )
                                                             ),(
-                                                                (Label::Heading(HType::H4, Id::Label("h4b".to_string())), Some(0)),
+                                                                (Label::Heading(HRel(1), Id::Label("h4b".to_string())), Some(0)),
                                                                 Block::H(
                                                                     None,
+                                                                    HType::H4,
                                                                     vec![Span::Text("h4b")],
                                                                     IndexMap::from([(
                                                                         (Label::Paragraph(Id::None), Some(0)),
@@ -3279,9 +3308,10 @@ doc > h1 > h2b // No change
                                 }
                             )
                         ),(
-                            (Label::Heading(HType::H2, Id::Label("h2b".to_string())), Some(0)),
+                            (Label::Heading(HRel(1), Id::Label("h2b".to_string())), Some(0)),
                             Block::H(
                                 None,
+                                HType::H2,
                                 vec![Span::Text("h2b")],
                                 IndexMap::from([
                                     (
@@ -3413,12 +3443,13 @@ doc > h1 > h2b // No change
     #[test]
     fn test_hashtag_index_of_block_heading_link_span() {
         let doc = ast("# ![[loc|Level 0]]");
-        if let Some(((label, Some(0)), Block::H(attrs, ss, _, srs))) = &doc.get_index(0) {
+        if let Some(((label, Some(0)), Block::H(attrs, htype, ss, _, srs))) = &doc.get_index(0) {
             assert_eq!(
                 *label,
-                Label::Heading(HType::H1, Id::Label("level-0".to_string()))
+                Label::Heading(HRel(1), Id::Label("level-0".to_string()))
             );
             assert_eq!(*attrs, None);
+            assert_eq!(*htype, HType::H1);
             let ts = contents(&ss, false);
             let hts = hashtags(ts);
             let s = span_label(&hts);
@@ -3440,13 +3471,14 @@ doc > h1 > h2b // No change
 
     #[test]
     fn test_hashtag_index_of_block_heading_negative_digit_only() {
-        let doc = ast("# -33-32 31 -30");
-        if let Some(((label, Some(0)), Block::H(attrs, ss, _, srs))) = &doc.get_index(0) {
+        let doc = ast("## -33-32 31 -30");
+        if let Some(((label, Some(0)), Block::H(attrs, htype, ss, _, srs))) = &doc.get_index(0) {
             assert_eq!(
                 *label,
-                Label::Heading(HType::H1, Id::Label("--33-32-31--30".to_string()))
+                Label::Heading(HRel(2), Id::Label("--33-32-31--30".to_string()))
             );
             assert_eq!(*attrs, None);
+            assert_eq!(*htype, HType::H2);
             let ts = contents(&ss, false);
             let hts = hashtags(ts);
             let s = span_label(&hts);
