@@ -877,8 +877,17 @@ pub enum Block<'a> {
         IndexMap<(Label, Option<usize>), Block<'a>>,
     ),
 
-    // ListItem(content, child list) NOTE: Label/Index identify list item type
-    LI(&'a str, Vec<Span<'a>>, Option<Box<(Label, Block<'a>)>>),
+    // ListItem(symbol, name, content, child list) NOTE: Label/Index identify the list item type
+    LI(
+        // list symbol
+        &'a str,
+        // name/label/index
+        Vec<Span<'a>>,
+        // content/value
+        Vec<Span<'a>>,
+        //child lists/blocks
+        Option<Box<(Label, Block<'a>)>>,
+    ),
 
     // Following Block Types contain no nested children
 
@@ -1209,14 +1218,15 @@ fn list_item<'a>(
             input,
             (
                 Label::ListItem(LType::Ordered, Id::Label(s.to_string())),
-                Block::LI(n, ss, nlb),
+                Block::LI(n, vec![Span::Text(s)], ss, nlb),
             ),
         )),
+        // TODO: parse name part of definition as single line span.
         Index(LType::Definition, n, Some(s)) => Ok((
             input,
             (
                 Label::ListItem(LType::Definition, Id::Label(span_label(&hashtags(vec![s])))),
-                Block::LI(n, ss, nlb),
+                Block::LI(n, vec![Span::Text(s)], ss, nlb),
             ),
         )),
         Index(LType::Unordered, n, None) => Ok((
@@ -1226,7 +1236,7 @@ fn list_item<'a>(
                     LType::Unordered,
                     Id::Label(span_label(&hashtags(contents(&ss, true)))),
                 ),
-                Block::LI(n, ss, nlb),
+                Block::LI(n, ss, vec![], nlb),
             ),
         )),
         Index(LType::Unordered, n, Some(v)) => Ok((
@@ -1236,7 +1246,7 @@ fn list_item<'a>(
                     LType::Unordered,
                     Id::Label(span_label(&hashtags(contents(&ss, true)))),
                 ),
-                Block::LI(n, vec![Span::Text(v)], nlb),
+                Block::LI(n, ss, vec![Span::Text(v)], nlb),
             ),
         )),
         _ => unreachable!(),
@@ -1444,7 +1454,7 @@ pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     }
 }
 
-// The following reduce functionality will merge the fields on matching keys
+// The following copy and reduce functionality will merge fields on matching keys
 // within a document while making a mutable copy.
 
 fn merge_attrs<'a>(source: &mut IndexMap<&'a str, &'a str>, patch: &IndexMap<&'a str, &'a str>) {
@@ -1456,6 +1466,7 @@ fn merge_attrs<'a>(source: &mut IndexMap<&'a str, &'a str>, patch: &IndexMap<&'a
 }
 
 // TODO: finish merge_refs
+// At this time only merge only tags
 fn merge_refs(_source: &mut SpanRefs, _patch: &SpanRefs) {}
 
 fn merge_blocks<'a>(
@@ -1470,9 +1481,7 @@ fn merge_blocks<'a>(
             // TODO: finish!
             // copy_reduce_block(source, patch_block);
             // Copy reduce the patching block into source
-            match patch_block {
-                _ => unreachable!(),
-            }
+            source.insert((label.clone(), None), copy_reduce_block(patch_block));
         }
     }
 }
@@ -1534,7 +1543,10 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
         }
 
         // List Item
-        (Block::LI(_symbol1, value1, list1), Block::LI(_symbol2, value2, list2)) => {
+        (
+            Block::LI(_symbol1, _name1, value1, list1),
+            Block::LI(_symbol2, _name2, value2, list2),
+        ) => {
             // Keep source symbol
             if !value2.is_empty() {
                 value1.clear();
@@ -1658,6 +1670,59 @@ fn copy_spans<'a>(source: &Vec<Span<'a>>) -> Vec<Span<'a>> {
     ss
 }
 
+fn copy_reduce_block<'a>(source: &Block<'a>) -> Block<'a> {
+    match *source {
+        // Div
+        Block::D(ref attrs, ref name, ref blocks, ref refs) => {
+            let blocks = copy_reduce_blocks(&blocks);
+            Block::D(copy_attrs(&attrs), name, blocks, refs.clone())
+        }
+
+        // Heading
+        Block::H(ref attrs, htype, ref value, ref blocks, ref refs) => {
+            let blocks = copy_reduce_blocks(&blocks);
+            Block::H(
+                copy_attrs(&attrs),
+                htype,
+                copy_spans(&value),
+                blocks,
+                refs.clone(),
+            )
+        }
+
+        // List
+        Block::L(ref attrs, ref listitems) => {
+            let listitems = copy_reduce_blocks(&listitems);
+            Block::L(copy_attrs(attrs), listitems)
+        }
+
+        // List Item
+        Block::LI(symbol, ref name, ref value, ref list) => {
+            let list = if let Some(list) = list {
+                if let (label, Block::L(ref attrs, ref listitems)) = list.as_ref() {
+                    let listitems = copy_reduce_blocks(&listitems);
+                    Some(Box::new((
+                        label.clone(),
+                        Block::L(copy_attrs(&attrs), listitems),
+                    )))
+                } else {
+                    // unreachable!()
+                    None
+                }
+            } else {
+                None
+            };
+            Block::LI(symbol, copy_spans(&name), copy_spans(&value), list)
+        }
+
+        // Code
+        Block::C(ref attrs, format, ref value) => Block::C(copy_attrs(&attrs), format, value),
+
+        // Paragraph
+        Block::P(ref attrs, ref value) => Block::P(copy_attrs(&attrs), copy_spans(&value)),
+    }
+}
+
 fn copy_reduce_blocks<'a>(
     source: &IndexMap<(Label, Option<usize>), Block<'a>>,
 ) -> IndexMap<(Label, Option<usize>), Block<'a>> {
@@ -1666,58 +1731,7 @@ fn copy_reduce_blocks<'a>(
         if let Some(block) = blocks.get_mut(&(label.clone(), None)) {
             merge_block(block, source_block);
         } else {
-            let block = match *source_block {
-                // Div
-                Block::D(ref attrs, ref name, ref blocks, ref refs) => {
-                    let blocks = copy_reduce_blocks(&blocks);
-                    Block::D(copy_attrs(&attrs), name, blocks, refs.clone())
-                }
-
-                // Heading
-                Block::H(ref attrs, htype, ref value, ref blocks, ref refs) => {
-                    let blocks = copy_reduce_blocks(&blocks);
-                    Block::H(
-                        copy_attrs(&attrs),
-                        htype,
-                        copy_spans(&value),
-                        blocks,
-                        refs.clone(),
-                    )
-                }
-
-                // List
-                Block::L(ref attrs, ref listitems) => {
-                    let listitems = copy_reduce_blocks(&listitems);
-                    Block::L(copy_attrs(attrs), listitems)
-                }
-
-                // List Item
-                Block::LI(symbol, ref value, ref list) => {
-                    let list = if let Some(list) = list {
-                        if let (label, Block::L(ref attrs, ref listitems)) = list.as_ref() {
-                            let listitems = copy_reduce_blocks(&listitems);
-                            Some(Box::new((
-                                label.clone(),
-                                Block::L(copy_attrs(&attrs), listitems),
-                            )))
-                        } else {
-                            // unreachable!()
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    Block::LI(symbol, copy_spans(&value), list)
-                }
-
-                // Code
-                Block::C(ref attrs, format, ref value) => {
-                    Block::C(copy_attrs(&attrs), format, value)
-                }
-
-                // Paragraph
-                Block::P(ref attrs, ref value) => Block::P(copy_attrs(&attrs), copy_spans(&value)),
-            };
+            let block = copy_reduce_block(source_block);
             blocks.insert((label.clone(), None), block);
         }
     }
@@ -2450,7 +2464,12 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("l1-h".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("l1 "), Span::Hash(None, "H 1")], None),
+                            Block::LI(
+                                "-",
+                                vec![Span::Text("l1 "), Span::Hash(None, "H 1")],
+                                vec![],
+                                None
+                            ),
                         ),
                         (
                             (
@@ -2460,6 +2479,7 @@ mod tests {
                             Block::LI(
                                 "-",
                                 vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
+                                vec![],
                                 Some(Box::new((
                                     (Label::List(Id::None)),
                                     Block::L(
@@ -2482,6 +2502,7 @@ mod tests {
                                                             "H 3"
                                                         )
                                                     ],
+                                                    vec![],
                                                     None
                                                 )
                                             ),
@@ -2499,6 +2520,7 @@ mod tests {
                                                         Span::Text("l2,2 "),
                                                         Span::Hash(Some(HashOp::NotEqual), "H 4")
                                                     ],
+                                                    vec![],
                                                     Some(Box::new((
                                                         (Label::List(Id::None)),
                                                         Block::L(
@@ -2516,6 +2538,7 @@ mod tests {
                                                                 Block::LI(
                                                                     "-",
                                                                     vec![Span::Text("l2,2,1")],
+                                                                    vec![],
                                                                     None
                                                                 )
                                                             ),])
@@ -2531,7 +2554,12 @@ mod tests {
                                                     ),
                                                     Some(0)
                                                 ),
-                                                Block::LI("-", vec![Span::Text("l2,3")], None)
+                                                Block::LI(
+                                                    "-",
+                                                    vec![Span::Text("l2,3")],
+                                                    vec![],
+                                                    None
+                                                )
                                             )
                                         ])
                                     )
@@ -2543,7 +2571,7 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("l3".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("l3")], None),
+                            Block::LI("-", vec![Span::Text("l3")], vec![], None),
                         )
                     ])
                 )
@@ -2573,7 +2601,7 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("l1".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("l1")], None)
+                            Block::LI("-", vec![Span::Text("l1")], vec![], None)
                         ),
                         (
                             (
@@ -2583,6 +2611,7 @@ mod tests {
                             Block::LI(
                                 "-",
                                 vec![Span::Text("l2")],
+                                vec![],
                                 Some(Box::new((
                                     (Label::List(Id::Label("SubList2".to_string()))),
                                     Block::L(
@@ -2596,7 +2625,12 @@ mod tests {
                                                     ),
                                                     Some(0)
                                                 ),
-                                                Block::LI("-", vec![Span::Text("l2,1")], None)
+                                                Block::LI(
+                                                    "-",
+                                                    vec![Span::Text("l2,1")],
+                                                    vec![],
+                                                    None
+                                                )
                                             ),
                                             (
                                                 (
@@ -2609,6 +2643,7 @@ mod tests {
                                                 Block::LI(
                                                     "-",
                                                     vec![Span::Text("l2,2")],
+                                                    vec![],
                                                     Some(Box::new((
                                                         (Label::List(Id::None)),
                                                         Block::L(
@@ -2626,6 +2661,7 @@ mod tests {
                                                                 Block::LI(
                                                                     "-",
                                                                     vec![Span::Text("l2,2,1")],
+                                                                    vec![],
                                                                     None
                                                                 )
                                                             )])
@@ -2641,7 +2677,12 @@ mod tests {
                                                     ),
                                                     Some(0)
                                                 ),
-                                                Block::LI("-", vec![Span::Text("l2,3")], None)
+                                                Block::LI(
+                                                    "-",
+                                                    vec![Span::Text("l2,3")],
+                                                    vec![],
+                                                    None
+                                                )
                                             )
                                         ])
                                     )
@@ -2653,7 +2694,7 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("l3".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("l3")], None)
+                            Block::LI("-", vec![Span::Text("l3")], vec![], None)
                         )
                     ])
                 )
@@ -2675,7 +2716,7 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("l1".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("l1")], None)
+                            Block::LI("-", vec![Span::Text("l1")], vec![], None)
                         ),
                         (
                             (
@@ -2685,6 +2726,7 @@ mod tests {
                             Block::LI(
                                 "-",
                                 vec![Span::Text("l2")],
+                                vec![],
                                 Some(Box::new((
                                     (Label::List(Id::None)),
                                     Block::L(
@@ -2698,7 +2740,12 @@ mod tests {
                                                     ),
                                                     Some(0)
                                                 ),
-                                                Block::LI("-", vec![Span::Text("l2,1")], None)
+                                                Block::LI(
+                                                    "-",
+                                                    vec![Span::Text("l2,1")],
+                                                    vec![],
+                                                    None
+                                                )
                                             ),
                                             (
                                                 (
@@ -2711,6 +2758,7 @@ mod tests {
                                                 Block::LI(
                                                     "-",
                                                     vec![Span::Text("l2,2")],
+                                                    vec![],
                                                     Some(Box::new((
                                                         (Label::List(Id::None)),
                                                         Block::L(
@@ -2728,6 +2776,7 @@ mod tests {
                                                                 Block::LI(
                                                                     "-",
                                                                     vec![Span::Text("l2,2,1")],
+                                                                    vec![],
                                                                     None
                                                                 )
                                                             )])
@@ -2743,7 +2792,12 @@ mod tests {
                                                     ),
                                                     Some(0)
                                                 ),
-                                                Block::LI("-", vec![Span::Text("l2,3")], None)
+                                                Block::LI(
+                                                    "-",
+                                                    vec![Span::Text("l2,3")],
+                                                    vec![],
+                                                    None
+                                                )
                                             )
                                         ])
                                     )
@@ -2755,7 +2809,7 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("l3".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("l3")], None)
+                            Block::LI("-", vec![Span::Text("l3")], vec![], None)
                         )
                     ])
                 )
@@ -2777,7 +2831,7 @@ mod tests {
                                 Label::ListItem(LType::Ordered, Id::Label("a".to_string())),
                                 Some(0)
                             ),
-                            Block::LI(")", vec![Span::Text("l1")], None),
+                            Block::LI(")", vec![Span::Text("a")], vec![Span::Text("l1")], None),
                         ),
                         (
                             (
@@ -2786,6 +2840,7 @@ mod tests {
                             ),
                             Block::LI(
                                 "(",
+                                vec![Span::Text("B")],
                                 vec![Span::Text("l2")],
                                 Some(Box::new((
                                     Label::List(Id::None),
@@ -2799,7 +2854,12 @@ mod tests {
                                                 ),
                                                 Some(0)
                                             ),
-                                            Block::LI(".", vec![Span::Text("l2,1")], None),
+                                            Block::LI(
+                                                ".",
+                                                vec![Span::Text("1")],
+                                                vec![Span::Text("l2,1")],
+                                                None
+                                            ),
                                         )])
                                     )
                                 )))
@@ -2825,7 +2885,12 @@ mod tests {
                                 Label::ListItem(LType::Definition, Id::Label("ab".to_string())),
                                 Some(0)
                             ),
-                            Block::LI(":", vec![Span::Text("\n  alpha")], None,),
+                            Block::LI(
+                                ":",
+                                vec![Span::Text("ab")],
+                                vec![Span::Text("\n  alpha")],
+                                None,
+                            ),
                         ),
                         (
                             (
@@ -2834,6 +2899,7 @@ mod tests {
                             ),
                             Block::LI(
                                 ":",
+                                vec![Span::Text("12")],
                                 vec![Span::Text("\n  digit")],
                                 Some(Box::new((
                                     (Label::List(Id::None)),
@@ -2847,7 +2913,12 @@ mod tests {
                                                 ),
                                                 Some(0)
                                             ),
-                                            Block::LI(":", vec![Span::Text("\n    roman")], None)
+                                            Block::LI(
+                                                ":",
+                                                vec![Span::Text("iv")],
+                                                vec![Span::Text("\n    roman")],
+                                                None
+                                            )
                                         )])
                                     ),
                                 )))
@@ -2888,6 +2959,7 @@ mod tests {
                                     Block::LI(
                                         "-",
                                         vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
+                                        vec![],
                                         None
                                     )
                                 ),
@@ -2902,6 +2974,7 @@ mod tests {
                                     Block::LI(
                                         "-",
                                         vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
+                                        vec![],
                                         None
                                     )
                                 )
@@ -2977,6 +3050,7 @@ mod tests {
                         ),
                         Block::LI(
                             ":",
+                            vec![Span::Text("ab")],
                             vec![],
                             Some(Box::new((
                                 (Label::List(Id::None)),
@@ -2990,7 +3064,12 @@ mod tests {
                                             ),
                                             Some(0)
                                         ),
-                                        Block::LI("*", vec![Span::Text(" ")], None)
+                                        Block::LI(
+                                            "*",
+                                            vec![Span::Text("alpha")],
+                                            vec![Span::Text(" ")],
+                                            None
+                                        )
                                     )])
                                 )
                             )))
@@ -3004,13 +3083,13 @@ mod tests {
     #[test]
     fn test_block_task_values_list() {
         assert_eq!(
-            ast(r#"- [ ] alpha
-* [x] bravo
-+ [X] charlie
-- [0:1] delta
-- [10] echo
-- [-10] foxtrot
-- [+10] golf"#),
+            ast(r#"- [ ] Alpha
+* [x] Bravo
++ [X] Charlie
+- [0:1] Delta
+- [10] Echo
+- [-10] Foxtrot
+- [+10] Golf"#),
             IndexMap::from([(
                 (Label::List(Id::None), Some(0)),
                 Block::L(
@@ -3021,49 +3100,64 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("alpha".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text(" ")], None)
+                            Block::LI("-", vec![Span::Text("Alpha")], vec![Span::Text(" ")], None)
                         ),
                         (
                             (
                                 Label::ListItem(LType::Unordered, Id::Label("bravo".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("*", vec![Span::Text("x")], None)
+                            Block::LI("*", vec![Span::Text("Bravo")], vec![Span::Text("x")], None)
                         ),
                         (
                             (
                                 Label::ListItem(LType::Unordered, Id::Label("charlie".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("+", vec![Span::Text("X")], None)
+                            Block::LI(
+                                "+",
+                                vec![Span::Text("Charlie")],
+                                vec![Span::Text("X")],
+                                None
+                            )
                         ),
                         (
                             (
                                 Label::ListItem(LType::Unordered, Id::Label("delta".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("0:1")], None)
+                            Block::LI(
+                                "-",
+                                vec![Span::Text("Delta")],
+                                vec![Span::Text("0:1")],
+                                None
+                            )
                         ),
                         (
                             (
                                 Label::ListItem(LType::Unordered, Id::Label("echo".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("10")], None)
+                            Block::LI("-", vec![Span::Text("Echo")], vec![Span::Text("10")], None)
                         ),
                         (
                             (
                                 Label::ListItem(LType::Unordered, Id::Label("foxtrot".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("-10")], None)
+                            Block::LI(
+                                "-",
+                                vec![Span::Text("Foxtrot")],
+                                vec![Span::Text("-10")],
+                                None
+                            )
                         ),
                         (
                             (
                                 Label::ListItem(LType::Unordered, Id::Label("golf".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("+10")], None)
+                            Block::LI("-", vec![Span::Text("Golf")], vec![Span::Text("+10")], None)
                         )
                     ])
                 )
@@ -3496,5 +3590,190 @@ doc > h1 > h2b // No change
         } else {
             panic!("Not able to get span from heading {:?}", doc);
         }
+    }
+
+    #[test]
+    fn test_basic_copy_reduce() {
+        let doc = document(
+            r#"# H1
+
+doc > h1
+
+## H2
+
+doc > h1 > h2
+
+- [1] L1
+- [1] L2
+
+## H2
+
+- [2] L2
+- [1] L3
+
+## H2
+
+- L3
+  - [ ] L3.1
+- [1] L4
+
+# H1
+
+::: D1
+
+doc > h1 > d1
+
+:::
+"#,
+        )
+        .unwrap();
+        let reduced_doc = copy_reduce(&doc);
+        assert_eq!(
+            reduced_doc.blocks,
+            IndexMap::from([(
+                (Label::Heading(HRel(1), Id::Label("h1".to_string())), None),
+                Block::H(
+                    None,
+                    HType::H1,
+                    vec![Span::Text("H1")],
+                    IndexMap::from([
+                        (
+                            (Label::Paragraph(Id::None), None),
+                            Block::P(None, vec![Span::Text("doc > h1")])
+                        ),
+                        (
+                            (Label::Heading(HRel(1), Id::Label("h2".to_string())), None),
+                            Block::H(
+                                None,
+                                HType::H2,
+                                vec![Span::Text("H2")],
+                                IndexMap::from([
+                                    (
+                                        (Label::Paragraph(Id::None), None),
+                                        Block::P(None, vec![Span::Text("doc > h1 > h2")])
+                                    ),
+                                    (
+                                        (Label::List(Id::None), None),
+                                        Block::L(
+                                            None,
+                                            IndexMap::from([
+                                                (
+                                                    (
+                                                        Label::ListItem(
+                                                            LType::Unordered,
+                                                            Id::Label("l1".to_string())
+                                                        ),
+                                                        None
+                                                    ),
+                                                    Block::LI(
+                                                        "-",
+                                                        vec![Span::Text("L1")],
+                                                        vec![Span::Text("1")],
+                                                        None
+                                                    )
+                                                ),
+                                                (
+                                                    (
+                                                        Label::ListItem(
+                                                            LType::Unordered,
+                                                            Id::Label("l2".to_string())
+                                                        ),
+                                                        None
+                                                    ),
+                                                    Block::LI(
+                                                        "-",
+                                                        vec![Span::Text("L2")],
+                                                        vec![Span::Text("2")],
+                                                        None
+                                                    )
+                                                ),
+                                                (
+                                                    (
+                                                        Label::ListItem(
+                                                            LType::Unordered,
+                                                            Id::Label("l3".to_string())
+                                                        ),
+                                                        None
+                                                    ),
+                                                    Block::LI(
+                                                        "-",
+                                                        vec![Span::Text("L3")],
+                                                        vec![Span::Text("1")],
+                                                        Some(Box::new((
+                                                            (Label::List(Id::None)),
+                                                            Block::L(
+                                                                None,
+                                                                IndexMap::from([(
+                                                                    (
+                                                                        Label::ListItem(
+                                                                            LType::Unordered,
+                                                                            Id::Label(
+                                                                                "l3.1".to_string()
+                                                                            )
+                                                                        ),
+                                                                        None
+                                                                    ),
+                                                                    Block::LI(
+                                                                        "-",
+                                                                        vec![Span::Text("L3.1")],
+                                                                        vec![Span::Text(" ")],
+                                                                        None
+                                                                    )
+                                                                )])
+                                                            )
+                                                        )))
+                                                    )
+                                                ),
+                                                (
+                                                    (
+                                                        Label::ListItem(
+                                                            LType::Unordered,
+                                                            Id::Label("l4".to_string())
+                                                        ),
+                                                        None
+                                                    ),
+                                                    Block::LI(
+                                                        "-",
+                                                        vec![Span::Text("L4")],
+                                                        vec![Span::Text("1")],
+                                                        None
+                                                    )
+                                                )
+                                            ])
+                                        )
+                                    )
+                                ]),
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
+                            ),
+                        ),
+                        (
+                            (Label::Div(Id::Label("d1".to_string())), None),
+                            Block::D(
+                                None,
+                                "D1",
+                                IndexMap::from([(
+                                    (Label::Paragraph(Id::None), None),
+                                    Block::P(None, vec![Span::Text("doc > h1 > d1")])
+                                )]),
+                                SpanRefs {
+                                    tags: None,
+                                    filters: None,
+                                    embeds: None
+                                }
+                            )
+                        )
+                    ]),
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None
+                    }
+                )
+            )])
+        )
     }
 }
