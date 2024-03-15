@@ -106,6 +106,7 @@ pub enum Span<'a> {
     NBWS(&'a str),
     Esc(&'a str),
     Text(&'a str),
+    Num(&'a str, isize),
     Hash(Option<HashOp>, &'a str),
     EOM,
     // Tags with Attributes
@@ -141,6 +142,7 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: IndexMap<&'a str, &'a str>) -> 
         | Span::NBWS(_)
         | Span::Esc(_)
         | Span::Text(_)
+        | Span::Num(_, _)
         | Span::Hash(_, _)
         | Span::EOM => span,
     }
@@ -212,7 +214,7 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
         .iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Verbatim(t, _, _) => vec![*t],
+                Span::Text(t) | Span::Num(t, _) | Span::Verbatim(t, _, _) => vec![*t],
                 Span::Hash(_, t) => {
                     // Filter out digits with associated negative sign
                     if let (true, Ok((_, vs))) = (label, filter_out_numbers(t)) {
@@ -825,7 +827,6 @@ pub enum LType {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum Label {
     Div(Id),
-
     Heading(HRel, Id),
     List(Id),
     ListItem(LType, Id),
@@ -1641,6 +1642,7 @@ fn copy_spans<'a>(source: &Vec<Span<'a>>) -> Vec<Span<'a>> {
             Span::NBWS(v) => ss.push(Span::NBWS(v)),
             Span::Esc(v) => ss.push(Span::Esc(v)),
             Span::Text(v) => ss.push(Span::Text(v)),
+            Span::Num(v, n) => ss.push(Span::Num(v, *n)),
             Span::Hash(op, v) => ss.push(Span::Hash(op.clone(), v)),
             Span::EOM => ss.push(Span::EOM),
             Span::Link(loc, embedded, vs, attrs) => ss.push(Span::Link(
