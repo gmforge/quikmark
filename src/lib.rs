@@ -1242,7 +1242,7 @@ fn list_item<'a>(
     let (input, nlb) = nested_list_block(input, depth, span_refs)?;
     match index {
         Index(LType::Ordered, n, Some(vs)) => {
-            let ss = if !ss.is_empty() {
+            let ss = if ss.len() == 1 {
                 if let &Span::Text(t) = &ss[0] {
                     if let Ok(n) = t.parse::<isize>() {
                         vec![Span::Num(Some(t), n)]
@@ -1266,9 +1266,9 @@ fn list_item<'a>(
                 ),
             ))
         }
-        // TODO: parse name part of definition as single line span.
+        // TODO: parse name part of definition as single line of spans.
         Index(LType::Definition, n, Some(vs)) => {
-            let ss = if !ss.is_empty() {
+            let ss = if ss.len() == 1 {
                 if let &Span::Text(t) = &ss[0] {
                     if let Ok(n) = t.parse::<isize>() {
                         vec![Span::Num(Some(t), n)]
@@ -1612,8 +1612,24 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
         ) => {
             // Keep source symbol
             if !value2.is_empty() {
-                value1.clear();
-                value1.append(&mut copy_spans(&value2));
+                if !value1.is_empty() {
+                    if value1.len() == 1 && value2.len() == 1 {
+                        if let (&mut Span::Num(_, n1), &Span::Num(_, n2)) =
+                            (&mut value1[0], &value2[0])
+                        {
+                            value1.clear();
+                            value1.append(&mut vec![Span::Num(None, n1 + n2)]);
+                        } else {
+                            value1.clear();
+                            value1.append(&mut copy_spans(&value2));
+                        }
+                    } else {
+                        value1.clear();
+                        value1.append(&mut copy_spans(&value2));
+                    }
+                } else {
+                    value1.append(&mut copy_spans(&value2));
+                }
             }
             match (list1, list2) {
                 (Some(box1), Some(box2)) => {
@@ -3761,7 +3777,7 @@ doc > h1 > d1
                                                     Block::LI(
                                                         "-",
                                                         vec![Span::Text("L2")],
-                                                        vec![Span::Num(Some("2"), 2)],
+                                                        vec![Span::Num(None, 3)],
                                                         None
                                                     )
                                                 ),
