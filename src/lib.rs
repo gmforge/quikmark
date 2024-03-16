@@ -106,7 +106,7 @@ pub enum Span<'a> {
     NBWS(&'a str),
     Esc(&'a str),
     Text(&'a str),
-    Num(&'a str, isize),
+    Num(Option<&'a str>, isize),
     Hash(Option<HashOp>, &'a str),
     EOM,
     // Tags with Attributes
@@ -214,7 +214,7 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
         .iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
             let rs = match result {
-                Span::Text(t) | Span::Num(t, _) | Span::Verbatim(t, _, _) => vec![*t],
+                Span::Text(t) | Span::Num(Some(t), _) | Span::Verbatim(t, _, _) => vec![*t],
                 Span::Hash(_, t) => {
                     // Filter out digits with associated negative sign
                     if let (true, Ok((_, vs))) = (label, filter_out_numbers(t)) {
@@ -238,7 +238,7 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
                 | Span::Insert(vs, _)
                 | Span::Delete(vs, _) => contents(&vs, label),
                 Span::LineBreak(s) | Span::NBWS(s) | Span::Esc(s) => vec![*s],
-                Span::EOM => vec![],
+                Span::EOM | Span::Num(None, _) => vec![],
             };
             unrolled.extend(rs);
             unrolled
@@ -1016,12 +1016,12 @@ fn code(input: &str) -> IResult<&str, Block<'_>> {
 //    Unordered(&'a str),
 //}
 // Index(List Type, List Markdown Notation, List Index or Value Option)
-pub struct Index<'a>(LType, &'a str, Option<&'a str>);
+pub struct Index<'a>(LType, &'a str, Option<Vec<Span<'a>>>);
 
 // Definition = { ": " ~ Field }
 fn definition(input: &str) -> IResult<&str, Index> {
     let (i, d) = preceded(tuple((tag(":"), space1)), not_line_ending)(input)?;
-    Ok((i, Index(LType::Definition, ":", Some(d))))
+    Ok((i, Index(LType::Definition, ":", Some(vec![Span::Text(d)]))))
 }
 
 // Definition = { ": " ~ Field }
@@ -1044,21 +1044,47 @@ fn ordered(input: &str) -> IResult<&str, Index> {
                 nom::error::ErrorKind::Alt,
             )));
         } else {
-            return Ok((i, Index(LType::Ordered, "(", Some(o))));
+            return Ok((i, Index(LType::Ordered, "(", Some(vec![Span::Text(o)]))));
         }
     }
-    Ok((i, Index(LType::Ordered, end_tag, Some(o))))
+    Ok((i, Index(LType::Ordered, end_tag, Some(vec![Span::Text(o)]))))
 }
 
-fn ratio(input: &str) -> IResult<&str, &str> {
-    let (i, (r, _)) = consumed(separated_pair(digit1, char(':'), digit1))(input)?;
-    Ok((i, r))
+fn number_span(input: &str) -> IResult<&str, Vec<Span<'_>>> {
+    let (i, s) = number(input)?;
+    let n = s.parse::<isize>().map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+    })?;
+    Ok((i, vec![Span::Num(Some(s), n)]))
 }
 
-fn task(input: &str) -> IResult<&str, &str> {
+fn ratio(input: &str) -> IResult<&str, Vec<Span<'_>>> {
+    let (i, (r1, r2)) = separated_pair(digit1, char(':'), digit1)(input)?;
+    let num1 = r1.parse::<isize>().map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+    })?;
+    let num2 = r2.parse::<isize>().map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+    })?;
+    Ok((
+        i,
+        vec![
+            Span::Num(Some(r1), num1),
+            Span::Text(":"),
+            Span::Num(Some(r2), num2),
+        ],
+    ))
+}
+
+fn check(input: &str) -> IResult<&str, Vec<Span<'_>>> {
+    let (i, c) = alt((tag(" "), tag("x"), tag("X")))(input)?;
+    Ok((i, vec![Span::Text(c)]))
+}
+
+fn task(input: &str) -> IResult<&str, Vec<Span<'_>>> {
     preceded(
         tag(" ["),
-        terminated(alt((tag(" "), tag("x"), tag("X"), ratio, number)), tag("]")),
+        terminated(alt((check, ratio, number_span)), tag("]")),
     )(input)
 }
 
@@ -1215,19 +1241,25 @@ fn list_item<'a>(
     let (input, ss) = span_refs.spans(input, None, Some(true));
     let (input, nlb) = nested_list_block(input, depth, span_refs)?;
     match index {
-        Index(LType::Ordered, n, Some(s)) => Ok((
+        Index(LType::Ordered, n, Some(vs)) => Ok((
             input,
             (
-                Label::ListItem(LType::Ordered, Id::Label(s.to_string())),
-                Block::LI(n, vec![Span::Text(s)], ss, nlb),
+                Label::ListItem(
+                    LType::Ordered,
+                    Id::Label(contents(&vs, false)[0].to_string()),
+                ),
+                Block::LI(n, vs, ss, nlb),
             ),
         )),
         // TODO: parse name part of definition as single line span.
-        Index(LType::Definition, n, Some(s)) => Ok((
+        Index(LType::Definition, n, Some(vs)) => Ok((
             input,
             (
-                Label::ListItem(LType::Definition, Id::Label(span_label(&hashtags(vec![s])))),
-                Block::LI(n, vec![Span::Text(s)], ss, nlb),
+                Label::ListItem(
+                    LType::Definition,
+                    Id::Label(span_label(&hashtags(contents(&vs, false)))),
+                ),
+                Block::LI(n, vs, ss, nlb),
             ),
         )),
         Index(LType::Unordered, n, None) => Ok((
@@ -1240,14 +1272,14 @@ fn list_item<'a>(
                 Block::LI(n, ss, vec![], nlb),
             ),
         )),
-        Index(LType::Unordered, n, Some(v)) => Ok((
+        Index(LType::Unordered, n, Some(vs)) => Ok((
             input,
             (
                 Label::ListItem(
                     LType::Unordered,
                     Id::Label(span_label(&hashtags(contents(&ss, true)))),
                 ),
-                Block::LI(n, ss, vec![Span::Text(v)], nlb),
+                Block::LI(n, ss, vs, nlb),
             ),
         )),
         _ => unreachable!(),
@@ -1642,7 +1674,7 @@ fn copy_spans<'a>(source: &Vec<Span<'a>>) -> Vec<Span<'a>> {
             Span::NBWS(v) => ss.push(Span::NBWS(v)),
             Span::Esc(v) => ss.push(Span::Esc(v)),
             Span::Text(v) => ss.push(Span::Text(v)),
-            Span::Num(v, n) => ss.push(Span::Num(v, *n)),
+            Span::Num(v, n) => ss.push(Span::Num(*v, *n)),
             Span::Hash(op, v) => ss.push(Span::Hash(op.clone(), v)),
             Span::EOM => ss.push(Span::EOM),
             Span::Link(loc, embedded, vs, attrs) => ss.push(Span::Link(
@@ -3131,7 +3163,11 @@ mod tests {
                             Block::LI(
                                 "-",
                                 vec![Span::Text("Delta")],
-                                vec![Span::Text("0:1")],
+                                vec![
+                                    Span::Num(Some("0"), 0),
+                                    Span::Text(":"),
+                                    Span::Num(Some("1"), 1)
+                                ],
                                 None
                             )
                         ),
@@ -3140,7 +3176,12 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("echo".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("Echo")], vec![Span::Text("10")], None)
+                            Block::LI(
+                                "-",
+                                vec![Span::Text("Echo")],
+                                vec![Span::Num(Some("10"), 10)],
+                                None
+                            )
                         ),
                         (
                             (
@@ -3150,7 +3191,7 @@ mod tests {
                             Block::LI(
                                 "-",
                                 vec![Span::Text("Foxtrot")],
-                                vec![Span::Text("-10")],
+                                vec![Span::Num(Some("-10"), -10)],
                                 None
                             )
                         ),
@@ -3159,7 +3200,12 @@ mod tests {
                                 Label::ListItem(LType::Unordered, Id::Label("golf".to_string())),
                                 Some(0)
                             ),
-                            Block::LI("-", vec![Span::Text("Golf")], vec![Span::Text("+10")], None)
+                            Block::LI(
+                                "-",
+                                vec![Span::Text("Golf")],
+                                vec![Span::Num(Some("+10"), 10)],
+                                None
+                            )
                         )
                     ])
                 )
@@ -3670,7 +3716,7 @@ doc > h1 > d1
                                                     Block::LI(
                                                         "-",
                                                         vec![Span::Text("L1")],
-                                                        vec![Span::Text("1")],
+                                                        vec![Span::Num(Some("1"), 1)],
                                                         None
                                                     )
                                                 ),
@@ -3685,7 +3731,7 @@ doc > h1 > d1
                                                     Block::LI(
                                                         "-",
                                                         vec![Span::Text("L2")],
-                                                        vec![Span::Text("2")],
+                                                        vec![Span::Num(Some("2"), 2)],
                                                         None
                                                     )
                                                 ),
@@ -3700,7 +3746,7 @@ doc > h1 > d1
                                                     Block::LI(
                                                         "-",
                                                         vec![Span::Text("L3")],
-                                                        vec![Span::Text("1")],
+                                                        vec![Span::Num(Some("1"), 1)],
                                                         Some(Box::new((
                                                             (Label::List(Id::None)),
                                                             Block::L(
@@ -3737,7 +3783,7 @@ doc > h1 > d1
                                                     Block::LI(
                                                         "-",
                                                         vec![Span::Text("L4")],
-                                                        vec![Span::Text("1")],
+                                                        vec![Span::Num(Some("1"), 1)],
                                                         None
                                                     )
                                                 )
