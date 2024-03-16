@@ -1241,27 +1241,57 @@ fn list_item<'a>(
     let (input, ss) = span_refs.spans(input, None, Some(true));
     let (input, nlb) = nested_list_block(input, depth, span_refs)?;
     match index {
-        Index(LType::Ordered, n, Some(vs)) => Ok((
-            input,
-            (
-                Label::ListItem(
-                    LType::Ordered,
-                    Id::Label(contents(&vs, false)[0].to_string()),
+        Index(LType::Ordered, n, Some(vs)) => {
+            let ss = if !ss.is_empty() {
+                if let &Span::Text(t) = &ss[0] {
+                    if let Ok(n) = t.parse::<isize>() {
+                        vec![Span::Num(Some(t), n)]
+                    } else {
+                        ss
+                    }
+                } else {
+                    ss
+                }
+            } else {
+                ss
+            };
+            Ok((
+                input,
+                (
+                    Label::ListItem(
+                        LType::Ordered,
+                        Id::Label(contents(&vs, false)[0].to_string()),
+                    ),
+                    Block::LI(n, vs, ss, nlb),
                 ),
-                Block::LI(n, vs, ss, nlb),
-            ),
-        )),
+            ))
+        }
         // TODO: parse name part of definition as single line span.
-        Index(LType::Definition, n, Some(vs)) => Ok((
-            input,
-            (
-                Label::ListItem(
-                    LType::Definition,
-                    Id::Label(span_label(&hashtags(contents(&vs, false)))),
+        Index(LType::Definition, n, Some(vs)) => {
+            let ss = if !ss.is_empty() {
+                if let &Span::Text(t) = &ss[0] {
+                    if let Ok(n) = t.parse::<isize>() {
+                        vec![Span::Num(Some(t), n)]
+                    } else {
+                        ss
+                    }
+                } else {
+                    ss
+                }
+            } else {
+                ss
+            };
+            Ok((
+                input,
+                (
+                    Label::ListItem(
+                        LType::Definition,
+                        Id::Label(span_label(&hashtags(contents(&vs, false)))),
+                    ),
+                    Block::LI(n, vs, ss, nlb),
                 ),
-                Block::LI(n, vs, ss, nlb),
-            ),
-        )),
+            ))
+        }
         Index(LType::Unordered, n, None) => Ok((
             input,
             (
