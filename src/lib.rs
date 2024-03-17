@@ -797,6 +797,7 @@ impl SpanRefs {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
 pub enum Id {
     None,
+    PValue,
     Uid(usize),
     Label(String),
 }
@@ -1262,7 +1263,7 @@ fn list_item<'a>(
                     IndexMap::from([((l, None), lb)])
                 } else {
                     IndexMap::from([
-                        ((Label::Paragraph(Id::None), None), Block::P(None, ss)),
+                        ((Label::Paragraph(Id::PValue), None), Block::P(None, ss)),
                         ((l, None), lb),
                     ])
                 }
@@ -1270,7 +1271,7 @@ fn list_item<'a>(
                 if ss.is_empty() {
                     IndexMap::from([])
                 } else {
-                    IndexMap::from([((Label::Paragraph(Id::None), None), Block::P(None, ss))])
+                    IndexMap::from([((Label::Paragraph(Id::PValue), None), Block::P(None, ss))])
                 }
             };
             Ok((
@@ -1304,7 +1305,7 @@ fn list_item<'a>(
                     IndexMap::from([((l, None), lb)])
                 } else {
                     IndexMap::from([
-                        ((Label::Paragraph(Id::None), None), Block::P(None, ss)),
+                        ((Label::Paragraph(Id::PValue), None), Block::P(None, ss)),
                         ((l, None), lb),
                     ])
                 }
@@ -1312,7 +1313,7 @@ fn list_item<'a>(
                 if ss.is_empty() {
                     IndexMap::from([])
                 } else {
-                    IndexMap::from([((Label::Paragraph(Id::None), None), Block::P(None, ss))])
+                    IndexMap::from([((Label::Paragraph(Id::PValue), None), Block::P(None, ss))])
                 }
             };
             Ok((
@@ -1346,11 +1347,11 @@ fn list_item<'a>(
         Index(LType::Unordered, n, Some(vs)) => {
             let ls: IndexMap<(Label, Option<usize>), Block<'a>> = if let Some((l, lb)) = nlb {
                 IndexMap::from([
-                    ((Label::Paragraph(Id::None), None), Block::P(None, vs)),
+                    ((Label::Paragraph(Id::PValue), None), Block::P(None, vs)),
                     ((l, None), lb),
                 ])
             } else {
-                IndexMap::from([((Label::Paragraph(Id::None), None), Block::P(None, vs))])
+                IndexMap::from([((Label::Paragraph(Id::PValue), None), Block::P(None, vs))])
             };
             Ok((
                 input,
@@ -1592,9 +1593,6 @@ fn merge_blocks<'a>(
         if let Some(source_block) = source.get_mut(&(label.clone(), None)) {
             merge_block(source_block, patch_block);
         } else {
-            // TODO: finish!
-            // copy_reduce_block(source, patch_block);
-            // Copy reduce the patching block into source
             source.insert((label.clone(), None), copy_reduce_block(patch_block));
         }
     }
@@ -2898,7 +2896,7 @@ mod tests {
                                 ")",
                                 vec![Span::Text("a")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Text("l1")])
                                 )]),
                             )
@@ -2913,7 +2911,7 @@ mod tests {
                                 vec![Span::Text("B")],
                                 IndexMap::from([
                                     (
-                                        (Label::Paragraph(Id::None), None),
+                                        (Label::Paragraph(Id::PValue), None),
                                         Block::P(None, vec![Span::Text("l2")])
                                     ),
                                     (
@@ -2932,7 +2930,7 @@ mod tests {
                                                     ".",
                                                     vec![Span::Text("1")],
                                                     IndexMap::from([(
-                                                        (Label::Paragraph(Id::None), None),
+                                                        (Label::Paragraph(Id::PValue), None),
                                                         Block::P(None, vec![Span::Text("l2,1")])
                                                     )])
                                                 ),
@@ -2966,7 +2964,7 @@ mod tests {
                                 ":",
                                 vec![Span::Text("ab")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Text("\n  alpha")]),
                                 )])
                             ),
@@ -2981,7 +2979,7 @@ mod tests {
                                 vec![Span::Text("12")],
                                 IndexMap::from([
                                     (
-                                        (Label::Paragraph(Id::None), None),
+                                        (Label::Paragraph(Id::PValue), None),
                                         Block::P(None, vec![Span::Text("\n  digit")])
                                     ),
                                     (
@@ -3000,7 +2998,7 @@ mod tests {
                                                     ":",
                                                     vec![Span::Text("iv")],
                                                     IndexMap::from([(
-                                                        (Label::Paragraph(Id::None), None),
+                                                        (Label::Paragraph(Id::PValue), None),
                                                         Block::P(
                                                             None,
                                                             vec![Span::Text("\n    roman")]
@@ -3154,7 +3152,7 @@ mod tests {
                                             "*",
                                             vec![Span::Text("alpha")],
                                             IndexMap::from([(
-                                                (Label::Paragraph(Id::None), None),
+                                                (Label::Paragraph(Id::PValue), None),
                                                 Block::P(None, vec![Span::Text(" ")]),
                                             )])
                                         )
@@ -3192,7 +3190,7 @@ mod tests {
                                 "-",
                                 vec![Span::Text("Alpha")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Text(" ")],)
                                 )])
                             )
@@ -3206,7 +3204,7 @@ mod tests {
                                 "*",
                                 vec![Span::Text("Bravo")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Text("x")],)
                                 )])
                             )
@@ -3220,7 +3218,7 @@ mod tests {
                                 "+",
                                 vec![Span::Text("Charlie")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Text("X")],)
                                 )])
                             )
@@ -3234,7 +3232,7 @@ mod tests {
                                 "-",
                                 vec![Span::Text("Delta")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(
                                         None,
                                         vec![
@@ -3255,7 +3253,7 @@ mod tests {
                                 "-",
                                 vec![Span::Text("Echo")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Num(Some("10"), 10)],)
                                 )])
                             )
@@ -3269,7 +3267,7 @@ mod tests {
                                 "-",
                                 vec![Span::Text("Foxtrot")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Num(Some("-10"), -10)],)
                                 )])
                             )
@@ -3283,7 +3281,7 @@ mod tests {
                                 "-",
                                 vec![Span::Text("Golf")],
                                 IndexMap::from([(
-                                    (Label::Paragraph(Id::None), None),
+                                    (Label::Paragraph(Id::PValue), None),
                                     Block::P(None, vec![Span::Num(Some("+10"), 10)],)
                                 )])
                             )
@@ -3798,7 +3796,7 @@ doc > h1 > d1
                                                         "-",
                                                         vec![Span::Text("L1")],
                                                         IndexMap::from([(
-                                                            (Label::Paragraph(Id::None), None),
+                                                            (Label::Paragraph(Id::PValue), None),
                                                             Block::P(
                                                                 None,
                                                                 vec![Span::Num(Some("1"), 1)],
@@ -3818,7 +3816,7 @@ doc > h1 > d1
                                                         "-",
                                                         vec![Span::Text("L2")],
                                                         IndexMap::from([(
-                                                            (Label::Paragraph(Id::None), None),
+                                                            (Label::Paragraph(Id::PValue), None),
                                                             Block::P(
                                                                 None,
                                                                 vec![Span::Num(None, 3)],
@@ -3839,7 +3837,7 @@ doc > h1 > d1
                                                         vec![Span::Text("L3")],
                                                         IndexMap::from([
                                                             (
-                                                                (Label::Paragraph(Id::None), None),
+                                                                (Label::Paragraph(Id::PValue), None),
                                                                 Block::P(None, vec![Span::Num(Some("1"), 1)]),
                                                             ),(
                                                                 (Label::List(Id::None), None),
@@ -3859,7 +3857,7 @@ doc > h1 > d1
                                                                             "-",
                                                                             vec![Span::Text("L3.1")],
                                                                             IndexMap::from([(
-                                                                                (Label::Paragraph(Id::None), None),
+                                                                                (Label::Paragraph(Id::PValue), None),
                                                                                 Block::P(
                                                                                     None,
                                                                                     vec![Span::Text(" ")],
@@ -3884,7 +3882,7 @@ doc > h1 > d1
                                                         "-",
                                                         vec![Span::Text("L4")],
                                                         IndexMap::from([(
-                                                            (Label::Paragraph(Id::None), None),
+                                                            (Label::Paragraph(Id::PValue), None),
                                                             Block::P(
                                                                 None,
                                                                 vec![Span::Num(Some("1"), 1)],
