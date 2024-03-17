@@ -1580,9 +1580,22 @@ fn merge_attrs<'a>(source: &mut IndexMap<&'a str, &'a str>, patch: &IndexMap<&'a
     }
 }
 
-// TODO: finish merge_refs
-// At this time only merge only tags
-fn merge_refs(_source: &mut SpanRefs, _patch: &SpanRefs) {}
+// At this time only merge only tags.
+fn merge_refs(source: &mut SpanRefs, patch: &SpanRefs) {
+    if let Some(patch_tags) = &patch.tags {
+        if let Some(source_tags) = &mut source.tags {
+            for (label, value) in patch_tags.iter() {
+                source_tags.insert(label.clone(), value.clone());
+            }
+        } else {
+            let mut source_tags: IndexMap<String, Vec<HashTag>> = IndexMap::new();
+            for (label, value) in patch_tags.iter() {
+                source_tags.insert(label.clone(), value.clone());
+            }
+            source.tags.replace(source_tags);
+        }
+    }
+}
 
 fn merge_blocks<'a>(
     source: &mut IndexMap<(Label, Option<usize>), Block<'a>>,
@@ -1618,8 +1631,8 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
 
         // Heading
         (
-            Block::H(attrs1, _htype1, _value1, blocks1, refs1),
-            Block::H(attrs2, _htype2, _value2, blocks2, refs2),
+            Block::H(attrs1, _htype1, value1, blocks1, refs1),
+            Block::H(attrs2, _htype2, value2, blocks2, refs2),
         ) => {
             match (attrs1, attrs2) {
                 (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
@@ -1630,12 +1643,11 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
                 }
                 _ => {}
             }
-            // Keep heading types same as original
-            // values have to be the same so leave untouched
-            //if !value2.is_empty() {
-            //    value1.clear();
-            //    value1.append(&mut copy_spans(&value2));
-            //}
+            // NOTE: Keep heading types the same as original.
+            if !value2.is_empty() {
+                value1.clear();
+                value1.append(&mut copy_spans(&value2));
+            }
             merge_blocks(blocks1, blocks2);
             merge_refs(refs1, refs2);
         }
@@ -3722,27 +3734,28 @@ doc > h1 > h2b // No change
     #[test]
     fn test_basic_copy_reduce() {
         let doc = document(
-            r#"# H1
+            r#"# H1 <#Level 3
 
 doc > h1
 
-## H2
+## H2 #Level 1
 
 doc > h1 > h2
 
 - [1] L1
 - [1] L2
 
-## H2
-
+## H2 #Level 2
 - [2] L2
 - [1] L3
 
-## H2
-
+## H2 #Level 3
 - L3
   - [ ] L3.1
 - [1] L4
+
+## H2 #Level 4
+
 
 # H1
 
@@ -3773,7 +3786,7 @@ doc > h1 > d1
                             Block::H(
                                 None,
                                 HType::H2,
-                                vec![Span::Text("H2")],
+                                vec![Span::Text("H2 "), Span::Hash(None, "Level 4")],
                                 IndexMap::from([
                                     (
                                         (Label::Paragraph(Id::None), None),
@@ -3895,7 +3908,7 @@ doc > h1 > d1
                                     )
                                 ]),
                                 SpanRefs {
-                                    tags: None,
+                                    tags: Some(IndexMap::from([("level".to_string(), vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(4)])])),
                                     filters: None,
                                     embeds: None
                                 }
@@ -3920,7 +3933,7 @@ doc > h1 > d1
                     ]),
                     SpanRefs {
                         tags: None,
-                        filters: None,
+                        filters: Some(vec![HashFilter { index: "level".to_string(), op: HashOp::LessThan, tags: vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(3)] }]),
                         embeds: None
                     }
                 )
