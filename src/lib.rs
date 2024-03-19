@@ -297,6 +297,58 @@ pub fn punctuation(input: &str) -> IResult<&str, &str> {
     is_a(r#"_~`'"\,;!¡?¿"#)(input)
 }
 
+fn hashcmp(op: HashOp, filter: &Vec<HashTag>, tags: &Vec<HashTag>) -> bool {
+    let cmp = match op {
+        HashOp::NotEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 != d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
+        HashOp::GreaterThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 > d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
+        HashOp::LessThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 < d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
+        HashOp::Equal => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 == d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
+    };
+    let filter_no_spaces = filter.iter().filter(|f: &&HashTag| **f != HashTag::Space);
+    let mut tags_no_spaces = tags.iter().filter(|t: &&HashTag| **t != HashTag::Space);
+    for f in filter_no_spaces {
+        if let Some(t) = tags_no_spaces.next() {
+            if !cmp(f, t) {
+                return false;
+            }
+        } else {
+            return true;
+        }
+    }
+    true
+}
+
+fn allow(filters: &Vec<Vec<HashFilter>>, tags: &Option<IndexMap<String, Vec<HashTag>>>) -> bool {
+    if let Some(ts) = tags {
+        for fs in filters {
+            for f in fs {
+                if let Some(ref t) = &ts.get(&f.index) {
+                    if !hashcmp(f.op, &f.tags, t) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
 // Tags turns contents into hash tags type that may be used for ordering
 // anchor strings for referencing/indexing, or filtering.
 pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
@@ -1548,7 +1600,6 @@ fn blocks<'a>(
     Ok((i, children))
 }
 
-// TODO: change tag's vector of strings to Hash types
 #[derive(Debug, PartialEq, Eq)]
 pub struct Document<'a> {
     // Blocks here should be non heading nor div contained sections.
@@ -1598,20 +1649,24 @@ fn merge_refs(source: &mut SpanRefs, patch: &SpanRefs) {
 }
 
 fn merge_blocks<'a>(
+    filters: &mut Vec<Vec<HashFilter>>,
     source: &mut IndexMap<(Label, Option<usize>), Block<'a>>,
     patch: &IndexMap<(Label, Option<usize>), Block<'a>>,
 ) {
     for ((label, _version), patch_block) in patch.iter() {
         // May need to add match to use versions for paragraphs
         if let Some(source_block) = source.get_mut(&(label.clone(), None)) {
-            merge_block(source_block, patch_block);
+            merge_block(filters, source_block, patch_block);
         } else {
-            source.insert((label.clone(), None), copy_reduce_block(patch_block));
+            source.insert(
+                (label.clone(), None),
+                copy_reduce_block(filters, patch_block),
+            );
         }
     }
 }
 
-fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
+fn merge_block<'a>(filters: &mut Vec<Vec<HashFilter>>, source: &mut Block<'a>, patch: &Block<'a>) {
     match (source, patch) {
         // Div
         (Block::D(attrs1, _name1, blocks1, refs1), Block::D(attrs2, _name2, blocks2, refs2)) => {
@@ -1625,7 +1680,7 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
                 _ => {}
             }
             // names have to be the same so leave untouched
-            merge_blocks(blocks1, blocks2);
+            merge_blocks(filters, blocks1, blocks2);
             merge_refs(refs1, refs2);
         }
 
@@ -1634,22 +1689,30 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
             Block::H(attrs1, _htype1, value1, blocks1, refs1),
             Block::H(attrs2, _htype2, value2, blocks2, refs2),
         ) => {
-            match (attrs1, attrs2) {
-                (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
-                (a @ None, Some(attrs2)) => {
-                    let mut attrs = IndexMap::new();
-                    merge_attrs(&mut attrs, attrs2);
-                    a.replace(attrs);
+            if allow(&filters, &refs2.tags) {
+                match (attrs1, attrs2) {
+                    (Some(attrs1), Some(attrs2)) => merge_attrs(attrs1, attrs2),
+                    (a @ None, Some(attrs2)) => {
+                        let mut attrs = IndexMap::new();
+                        merge_attrs(&mut attrs, attrs2);
+                        a.replace(attrs);
+                    }
+                    _ => {}
                 }
-                _ => {}
+                // NOTE: Keep heading types the same as original.
+                if !value2.is_empty() {
+                    value1.clear();
+                    value1.append(&mut copy_spans(&value2));
+                }
+                if let Some(fs) = &refs1.filters {
+                    filters.push(fs.clone());
+                    merge_blocks(filters, blocks1, blocks2);
+                    filters.pop();
+                } else {
+                    merge_blocks(filters, blocks1, blocks2);
+                }
+                merge_refs(refs1, refs2);
             }
-            // NOTE: Keep heading types the same as original.
-            if !value2.is_empty() {
-                value1.clear();
-                value1.append(&mut copy_spans(&value2));
-            }
-            merge_blocks(blocks1, blocks2);
-            merge_refs(refs1, refs2);
         }
 
         // List
@@ -1663,13 +1726,13 @@ fn merge_block<'a>(source: &mut Block<'a>, patch: &Block<'a>) {
                 }
                 _ => {}
             }
-            merge_blocks(listitems1, listitems2);
+            merge_blocks(filters, listitems1, listitems2);
         }
 
         // List Item
         (Block::LI(_symbol1, _name1, list1), Block::LI(_symbol2, _name2, list2)) => {
             // Keep source symbol
-            merge_blocks(list1, list2);
+            merge_blocks(filters, list1, list2);
         }
 
         // Code
@@ -1773,17 +1836,17 @@ fn copy_spans<'a>(source: &Vec<Span<'a>>) -> Vec<Span<'a>> {
     ss
 }
 
-fn copy_reduce_block<'a>(source: &Block<'a>) -> Block<'a> {
+fn copy_reduce_block<'a>(filters: &mut Vec<Vec<HashFilter>>, source: &Block<'a>) -> Block<'a> {
     match *source {
         // Div
         Block::D(ref attrs, ref name, ref blocks, ref refs) => {
-            let blocks = copy_reduce_blocks(&blocks);
+            let blocks = copy_reduce_blocks(filters, &blocks);
             Block::D(copy_attrs(&attrs), name, blocks, refs.clone())
         }
 
         // Heading
         Block::H(ref attrs, htype, ref value, ref blocks, ref refs) => {
-            let blocks = copy_reduce_blocks(&blocks);
+            let blocks = copy_reduce_blocks(filters, &blocks);
             Block::H(
                 copy_attrs(&attrs),
                 htype,
@@ -1795,14 +1858,16 @@ fn copy_reduce_block<'a>(source: &Block<'a>) -> Block<'a> {
 
         // List
         Block::L(ref attrs, ref listitems) => {
-            let listitems = copy_reduce_blocks(&listitems);
+            let listitems = copy_reduce_blocks(filters, &listitems);
             Block::L(copy_attrs(attrs), listitems)
         }
 
         // List Item
-        Block::LI(symbol, ref name, ref list) => {
-            Block::LI(symbol, copy_spans(&name), copy_reduce_blocks(&list))
-        }
+        Block::LI(symbol, ref name, ref list) => Block::LI(
+            symbol,
+            copy_spans(&name),
+            copy_reduce_blocks(filters, &list),
+        ),
 
         // Code
         Block::C(ref attrs, format, ref value) => Block::C(copy_attrs(&attrs), format, value),
@@ -1813,23 +1878,46 @@ fn copy_reduce_block<'a>(source: &Block<'a>) -> Block<'a> {
 }
 
 fn copy_reduce_blocks<'a>(
+    filters: &mut Vec<Vec<HashFilter>>,
     source: &IndexMap<(Label, Option<usize>), Block<'a>>,
 ) -> IndexMap<(Label, Option<usize>), Block<'a>> {
     let mut blocks: IndexMap<(Label, Option<usize>), Block<'a>> = IndexMap::new();
     for ((label, _version), source_block) in source.iter() {
         if let Some(block) = blocks.get_mut(&(label.clone(), None)) {
-            merge_block(block, source_block);
+            merge_block(filters, block, source_block);
+        } else if let Block::H(_, _, _, _, ref refs) = &source_block {
+            if allow(&filters, &refs.tags) {
+                if let Some(fs) = &refs.filters {
+                    filters.push(fs.clone());
+                    blocks.insert(
+                        (label.clone(), None),
+                        copy_reduce_block(filters, source_block),
+                    );
+                    filters.pop();
+                } else {
+                    blocks.insert(
+                        (label.clone(), None),
+                        copy_reduce_block(filters, source_block),
+                    );
+                }
+            }
         } else {
-            let block = copy_reduce_block(source_block);
-            blocks.insert((label.clone(), None), block);
+            blocks.insert(
+                (label.clone(), None),
+                copy_reduce_block(filters, source_block),
+            );
         }
     }
     blocks
 }
 
 pub fn copy_reduce<'a>(doc: &Document<'a>) -> Document<'a> {
+    let mut filters: Vec<Vec<HashFilter>> = Vec::new();
+    if let Some(ref fs) = &doc.span_refs.filters {
+        filters.push(fs.clone());
+    }
     Document {
-        blocks: copy_reduce_blocks(&doc.blocks),
+        blocks: copy_reduce_blocks(&mut filters, &doc.blocks),
         span_refs: doc.span_refs.clone(),
     }
 }
@@ -3732,9 +3820,29 @@ doc > h1 > h2b // No change
     }
 
     #[test]
+    fn test_hashtag_filter() {
+        let t1 = vec![
+            HashTag::Str("level".to_string()),
+            HashTag::Space,
+            HashTag::Num(1),
+        ];
+        let t2 = vec![
+            HashTag::Str("level".to_string()),
+            HashTag::Space,
+            HashTag::Num(2),
+        ];
+        let t3 = vec![HashTag::Str("level".to_string()), HashTag::Num(1)];
+        assert_eq!(true, hashcmp(HashOp::NotEqual, &t1, &t2));
+        assert_eq!(true, hashcmp(HashOp::GreaterThan, &t1, &t2));
+        assert_eq!(false, hashcmp(HashOp::LessThan, &t1, &t2));
+        assert_eq!(false, hashcmp(HashOp::Equal, &t1, &t2));
+        assert_eq!(true, hashcmp(HashOp::Equal, &t1, &t3));
+    }
+
+    #[test]
     fn test_basic_copy_reduce() {
         let doc = document(
-            r#"# H1 <#Level 3
+            r#"# H1 <#Level 4
 
 doc > h1
 
@@ -3755,7 +3863,7 @@ doc > h1 > h2
 - [1] L4
 
 ## H2 #Level 4
-
+- [1] L5
 
 # H1
 
@@ -3786,7 +3894,7 @@ doc > h1 > d1
                             Block::H(
                                 None,
                                 HType::H2,
-                                vec![Span::Text("H2 "), Span::Hash(None, "Level 4")],
+                                vec![Span::Text("H2 "), Span::Hash(None, "Level 3")],
                                 IndexMap::from([
                                     (
                                         (Label::Paragraph(Id::None), None),
@@ -3908,7 +4016,7 @@ doc > h1 > d1
                                     )
                                 ]),
                                 SpanRefs {
-                                    tags: Some(IndexMap::from([("level".to_string(), vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(4)])])),
+                                    tags: Some(IndexMap::from([("level".to_string(), vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(3)])])),
                                     filters: None,
                                     embeds: None
                                 }
@@ -3933,7 +4041,7 @@ doc > h1 > d1
                     ]),
                     SpanRefs {
                         tags: None,
-                        filters: Some(vec![HashFilter { index: "level".to_string(), op: HashOp::LessThan, tags: vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(3)] }]),
+                        filters: Some(vec![HashFilter { index: "level".to_string(), op: HashOp::LessThan, tags: vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(4)] }]),
                         embeds: None
                     }
                 )
