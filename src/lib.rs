@@ -209,7 +209,7 @@ fn filter_out_numbers(input: &str) -> IResult<&str, Vec<&str>> {
 }
 
 // Contents concatenates the text within the nested vectors of spans
-pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
+fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
     outer
         .iter()
         .fold(vec![], |mut unrolled, result| -> Vec<&'a str> {
@@ -247,7 +247,7 @@ pub fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
 
 // Hash tag labels generates indexes of hash tags minus any span formatting,
 // nor numerical values, so that ranges of hashtags may be compared.
-pub fn htlabel(hts: &Vec<HashTag>) -> String {
+fn htlabel(hts: &Vec<HashTag>) -> String {
     let mut s = String::new();
     let mut space = false;
     for ht in hts {
@@ -293,7 +293,7 @@ pub fn span_label(hts: &Vec<HashTag>) -> String {
 // colen as a ratio, and forward slash as a fraction
 // carrot and double asterisk as an exponential.
 // TODO: add special quotations and hyphens
-pub fn punctuation(input: &str) -> IResult<&str, &str> {
+fn punctuation(input: &str) -> IResult<&str, &str> {
     is_a(r#"_~`'"\,;!¡?¿"#)(input)
 }
 
@@ -886,14 +886,6 @@ pub enum Label {
     Code(Id),
     Paragraph(Id),
 }
-
-//#[derive(Debug, PartialEq, Eq)]
-//pub struct Block<'a> {
-//    content: Vec<Span<'a>>,
-//    attrs: Option<IndexMap<&'a str, &'a str>>,
-//    span_refs: Option<SpanRefs>,
-//    blocks: Option<IndexMap<(Label, Option<usize>), Block<'a>>>,
-//}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Block<'a> {
@@ -1609,7 +1601,7 @@ pub struct Document<'a> {
 }
 
 // Document = { Block* ~ NEWLINE* ~ EOI }
-pub fn document(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
+pub fn parse(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     let mut span_refs = SpanRefs::default();
     match blocks(input, false, HType::None, &mut span_refs) {
         Ok((_, bs)) => Ok(Document {
@@ -1911,7 +1903,7 @@ fn copy_reduce_blocks<'a>(
     blocks
 }
 
-pub fn copy_reduce<'a>(doc: &Document<'a>) -> Document<'a> {
+pub fn reduce<'a>(doc: &Document<'a>) -> Document<'a> {
     let mut filters: Vec<Vec<HashFilter>> = Vec::new();
     if let Some(ref fs) = &doc.span_refs.filters {
         filters.push(fs.clone());
@@ -1934,7 +1926,7 @@ mod tests {
     }
 
     fn ast(input: &str) -> IndexMap<(Label, Option<usize>), Block> {
-        let doc = document(input).unwrap();
+        let doc = parse(input).unwrap();
         doc.blocks
     }
 
@@ -2145,7 +2137,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_hash_field_eom() {
-        let doc = document("left !#Hash").unwrap();
+        let doc = parse("left !#Hash").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2175,7 +2167,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_hash_field_newline() {
-        let doc = document("left #hash 1 \nnext line").unwrap();
+        let doc = parse("left #hash 1 \nnext line").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2209,7 +2201,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_location() {
-        let doc = document("left ![[loc]]").unwrap();
+        let doc = parse("left ![[loc]]").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2232,7 +2224,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_with_location_and_text_super() {
-        let doc = document("left [[loc|text^SUP^]] right").unwrap();
+        let doc = parse("left [[loc|text^SUP^]] right").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2267,7 +2259,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
-        let doc = document("left ![[Loc|text `Verbatim`]] right").unwrap();
+        let doc = parse("left ![[Loc|text `Verbatim`]] right").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2333,7 +2325,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_attributes() {
-        let doc = document("left ![[LOC]]{k1=v1 k_2=v_2}").unwrap();
+        let doc = parse("left ![[LOC]]{k1=v1 k_2=v_2}").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2565,7 +2557,7 @@ mod tests {
 
     #[test]
     fn test_block_div_para_attrs() {
-        let doc = document("::: div1\n\n{format=blockquote}\ntest paragraph").unwrap();
+        let doc = parse("::: div1\n\n{format=blockquote}\ntest paragraph").unwrap();
         assert_eq!(
             doc.blocks,
             IndexMap::from([(
@@ -2593,7 +2585,7 @@ mod tests {
     #[test]
     fn test_block_unordered_list() {
         let doc =
-            document("- l1 #H 1\n\n- l2 #H 2\n\n  - l2,1 >#H 3\n\n  - l2,2 !#H 4\n\n    - l2,2,1\n\n  - l2,3\n\n- l3")
+            parse("- l1 #H 1\n\n- l2 #H 2\n\n  - l2,1 >#H 3\n\n  - l2,2 !#H 4\n\n    - l2,2,1\n\n  - l2,3\n\n- l3")
                 .unwrap();
         assert_eq!(
             doc.span_refs,
@@ -3670,8 +3662,7 @@ doc > h1 > h2b // No change
 
     #[test]
     fn test_content_and_hashtag_index_of_block_paragraph_link_with_location_and_span() {
-        let doc =
-            document("Left \\\n![[loC|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n").unwrap();
+        let doc = parse("Left \\\n![[loC|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -3841,7 +3832,7 @@ doc > h1 > h2b // No change
 
     #[test]
     fn test_basic_copy_reduce() {
-        let doc = document(
+        let doc = parse(
             r#"# H1 <#Level 4
 
 doc > h1
@@ -3875,7 +3866,7 @@ doc > h1 > d1
 "#,
         )
         .unwrap();
-        let reduced_doc = copy_reduce(&doc);
+        let reduced_doc = reduce(&doc);
         assert_eq!(
             reduced_doc.blocks,
             IndexMap::from([(

@@ -1,5 +1,5 @@
 extern crate qwikmark;
-use qwikmark::{document, Document};
+use qwikmark::{parse, Document};
 use std::rc::Rc;
 use std::{env, error::Error, fs};
 
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let content = fs::read_to_string(&name)?;
     let content = Rc::new(content);
     //let contents2 = Rc::clone(&contents);
-    let doc = document(&content)?;
+    let doc = parse(&content)?;
     docs.cache.push((Rc::clone(&content), doc));
     println!("{:?}", docs.cache[0].1.blocks);
     //println!("{:?}", content);
