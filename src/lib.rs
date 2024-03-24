@@ -9,6 +9,7 @@ use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
 use phf::phf_map;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
@@ -113,6 +114,7 @@ pub enum Span<'a> {
     Link(
         &'a str,
         bool,
+        SpanRefs,
         Vec<Span<'a>>,
         Option<IndexMap<&'a str, &'a str>>,
     ),
@@ -129,7 +131,7 @@ pub enum Span<'a> {
 fn span_with_attributes<'a>(span: Span<'a>, kvs: IndexMap<&'a str, &'a str>) -> Span<'a> {
     match span {
         // Tags with Attributes
-        Span::Link(loc, e, ss, _) => Span::Link(loc, e, ss, Some(kvs)),
+        Span::Link(loc, e, rs, ss, _) => Span::Link(loc, e, rs, ss, Some(kvs)),
         Span::Verbatim(text, format, _) => Span::Verbatim(text, format, Some(kvs)),
         Span::Strong(ss, _) => Span::Strong(ss, Some(kvs)),
         Span::Emphasis(ss, _) => Span::Emphasis(ss, Some(kvs)),
@@ -223,7 +225,7 @@ fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
                         vec![]
                     }
                 }
-                Span::Link(s, _, vs, _) => {
+                Span::Link(s, _, _, vs, _) => {
                     if vs.is_empty() {
                         vec![*s]
                     } else {
@@ -516,7 +518,7 @@ fn locator(input: &str) -> IResult<&str, &str> {
 pub struct SpanRefs {
     tags: Option<IndexMap<String, Vec<HashTag>>>,
     filters: Option<Vec<HashFilter>>,
-    embeds: Option<Vec<(String, String)>>,
+    embeds: Option<HashSet<String>>,
 }
 
 impl SpanRefs {
@@ -656,18 +658,21 @@ impl SpanRefs {
     // Link      =  { "[[" ~ Locator ~ LinkDlmr? ~ (!"]]" ~ (Span | Char))* ~ ("]]" ~ Attribute* | &End) }
     fn link<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
         let (i, (e, l)) = tuple((opt(tag("!")), preceded(tag("[["), locator)))(input)?;
-        let embed = e.is_some();
-        let (i, ss) = self.spans(i, Some("]]"), None);
-        if embed {
-            let label = span_label(&hashtags(contents(&ss, false)));
+        let embedded = e.is_some();
+        // spans/ss within the link may have hash tag filters,
+        // which would only affect the link
+        let mut local_span_refs = SpanRefs::default();
+        let (i, ss) = local_span_refs.spans(i, Some("]]"), None);
+        //let label = span_label(&hashtags(contents(&ss, false)));
+        if embedded {
             let link = l.to_string();
             if let Some(es) = &mut self.embeds {
-                es.push((label, link));
+                es.insert(link.to_string());
             } else {
-                self.embeds = Some(vec![(label, link)])
+                self.embeds = Some(HashSet::from([link.to_string()]));
             }
         }
-        Ok((i, Span::Link(l, embed, ss, None)))
+        Ok((i, Span::Link(l, embedded, local_span_refs, ss, None)))
     }
 
     // Char      =  { !NEWLINE ~ "\\"? ~ ANY }
@@ -682,10 +687,6 @@ impl SpanRefs {
     //   | Char
     //   | NEWLINE ~ !NEWLINE
     // }
-    // TODO: Look at turn spans function signature
-    //   from (input: &str, closer: Option<&str>)
-    //     to (input: &str, closer: &str)
-    //   where starting closer as "" happens to also be the same as eof/eom
     fn spans<'a, 'b>(
         &'b mut self,
         input: &'a str,
@@ -696,18 +697,9 @@ impl SpanRefs {
         &'a str,
         // Constructed spans
         Vec<Span<'a>>,
-        // Heading associated hashtags
-        //Option<IndexMap<String, Vec<HashTag>>>,
-        // Heading associated hash filters
-        //Option<HashFilter>,
-        // Heading embedded links
-        //Option<Vec<Span<'a>>>,
     ) {
         let mut i = input;
         let mut ss = Vec::new();
-        //let mut hash_tags: IndexMap<String, Vec<HashTag>> = IndexMap::new();
-        //let mut hash_filters: Vec<(String, HashOp, Vec<HashTag>)> = Vec::new();
-        //let mut embedded_links: Option<Span<'a>> = None;
         // Loop through text until reach two newlines
         // or newline matches valid start of a list item.
         let mut boundary = true;
@@ -1498,6 +1490,15 @@ fn blocks<'a>(
             let (input, div_bs) = blocks(input, true, refs, &mut span_refs)?;
             let (input, _) = opt(div_close)(input)?;
             i = input;
+            // Transfer embeds over to parent Span Refs.
+            let ces = span_refs.embeds.take();
+            if let Some(ces) = ces {
+                if let Some(pes) = &mut parent_span_refs.embeds {
+                    pes.extend(ces.into_iter());
+                } else {
+                    parent_span_refs.embeds = Some(ces);
+                }
+            }
             let div_index = span_label(&hashtags(vec![name]));
             let label = Label::Div(Id::Label(div_index));
             let mut version: usize = 0;
@@ -1517,6 +1518,15 @@ fn blocks<'a>(
             let (input, head_spans) = span_refs.spans(input, None, Some(false));
             let (input, head_blocks) = blocks(input, divs, hl, &mut span_refs)?;
             i = input;
+            // Transfer embeds over to parent Span Refs.
+            let ces = span_refs.embeds.take();
+            if let Some(ces) = ces {
+                if let Some(pes) = &mut parent_span_refs.embeds {
+                    pes.extend(ces.into_iter());
+                } else {
+                    parent_span_refs.embeds = Some(ces);
+                }
+            }
             let head_index = span_label(&hashtags(contents(&head_spans, false)));
             let label =
                 Label::Heading(HRel((hl as usize) - (refs as usize)), Id::Label(head_index));
@@ -1604,10 +1614,7 @@ pub struct Document<'a> {
 pub fn parse(input: &str) -> Result<Document<'_>, Box<dyn Error>> {
     let mut span_refs = SpanRefs::default();
     match blocks(input, false, HType::None, &mut span_refs) {
-        Ok((_, bs)) => Ok(Document {
-            blocks: bs,
-            span_refs,
-        }),
+        Ok((_, blocks)) => Ok(Document { blocks, span_refs }),
         Err(e) => Err(Box::from(format!("Unable to parse input: {e:?}"))),
     }
 }
@@ -1801,9 +1808,10 @@ fn copy_spans<'a>(source: &Vec<Span<'a>>) -> Vec<Span<'a>> {
             Span::Num(v, n) => ss.push(Span::Num(*v, *n)),
             Span::Hash(op, v) => ss.push(Span::Hash(op.clone(), v)),
             Span::EOM => ss.push(Span::EOM),
-            Span::Link(loc, embedded, vs, attrs) => ss.push(Span::Link(
+            Span::Link(loc, embedded, rs, vs, attrs) => ss.push(Span::Link(
                 loc,
                 embedded.clone(),
+                rs.clone(),
                 copy_spans(&vs),
                 copy_attrs(attrs),
             )),
@@ -2207,7 +2215,7 @@ mod tests {
             SpanRefs {
                 tags: None,
                 filters: None,
-                embeds: Some(vec![("-".to_string(), "loc".to_string())]),
+                embeds: Some(HashSet::from(["loc".to_string()])),
             },
         );
         assert_eq!(
@@ -2216,7 +2224,10 @@ mod tests {
                 (Label::Paragraph(Id::None), Some(0)),
                 Block::P(
                     None,
-                    vec![Span::Text("left "), Span::Link("loc", true, vec![], None)],
+                    vec![
+                        Span::Text("left "),
+                        Span::Link("loc", true, SpanRefs::default(), vec![], None)
+                    ],
                 )
             )])
         );
@@ -2244,6 +2255,7 @@ mod tests {
                         Span::Link(
                             "loc",
                             false,
+                            SpanRefs::default(),
                             vec![
                                 Span::Text("text"),
                                 Span::Superscript(vec![Span::Text("SUP")], None)
@@ -2265,7 +2277,7 @@ mod tests {
             SpanRefs {
                 tags: None,
                 filters: None,
-                embeds: Some(vec![("text-verbatim".to_string(), "Loc".to_string())]),
+                embeds: Some(HashSet::from(["Loc".to_string()]))
             },
         );
         assert_eq!(
@@ -2279,6 +2291,7 @@ mod tests {
                         Span::Link(
                             "Loc",
                             true,
+                            SpanRefs::default(),
                             vec![Span::Text("text "), Span::Verbatim("Verbatim", None, None)],
                             None
                         ),
@@ -2331,7 +2344,7 @@ mod tests {
             SpanRefs {
                 tags: None,
                 filters: None,
-                embeds: Some(vec![("-".to_string(), "LOC".to_string())]),
+                embeds: Some(HashSet::from(["LOC".to_string()])),
             },
         );
         assert_eq!(
@@ -2345,6 +2358,7 @@ mod tests {
                         Span::Link(
                             "LOC",
                             true,
+                            SpanRefs::default(),
                             vec![],
                             Some(IndexMap::from([("k1", "v1",), ("k_2", "v_2")]))
                         )
@@ -2368,6 +2382,7 @@ mod tests {
                         Span::Link(
                             "loc",
                             false,
+                            SpanRefs::default(),
                             vec![],
                             Some(IndexMap::from([("k1", "v1",), ("k_2", "v_2")]))
                         ),
@@ -2391,6 +2406,7 @@ mod tests {
                         Span::Link(
                             "loc",
                             false,
+                            SpanRefs::default(),
                             vec![],
                             Some(IndexMap::from([("k1", "v1",), ("k_2", r#"v\ 2"#)])),
                         )
@@ -3675,7 +3691,7 @@ doc > h1 > h2b // No change
                     ]
                 )])),
                 filters: None,
-                embeds: Some(vec![("text-32--32v-ab".to_string(), "loC".to_string())])
+                embeds: Some(HashSet::from(["loC".to_string()]))
             }
         );
         assert_eq!(
@@ -3690,6 +3706,7 @@ doc > h1 > h2b // No change
                         Span::Link(
                             "loC",
                             true,
+                            SpanRefs::default(),
                             vec![
                                 Span::Text("text-32 "),
                                 Span::Verbatim("-32v", None, None),
@@ -3754,8 +3771,9 @@ doc > h1 > h2b // No change
 
     #[test]
     fn test_hashtag_index_of_block_heading_link_span() {
-        let doc = ast("# ![[loc|Level 0]]");
-        if let Some(((label, Some(0)), Block::H(attrs, htype, ss, _, srs))) = &doc.get_index(0) {
+        let doc = parse("# ![[loc|Level 0]]").unwrap();
+        if let Some(((label, Some(0)), Block::H(attrs, htype, ss, _, _))) = &doc.blocks.get_index(0)
+        {
             assert_eq!(
                 *label,
                 Label::Heading(HRel(1), Id::Label("level-0".to_string()))
@@ -3769,11 +3787,11 @@ doc > h1 > h2b // No change
             let s = htlabel(&hts);
             assert_eq!(s, "level");
             assert_eq!(
-                *srs,
+                doc.span_refs,
                 SpanRefs {
                     tags: None,
                     filters: None,
-                    embeds: Some(vec![("level-0".to_string(), "loc".to_string())])
+                    embeds: Some(HashSet::from(["loc".to_string()]))
                 }
             );
         } else {
