@@ -4057,4 +4057,137 @@ doc > h1 > d1
             )])
         )
     }
+
+    #[test]
+    fn test_multi_level_block_to_doc_embedded_transfer() {
+        let doc = parse(
+            r#"# H1
+
+## ![[Level 2 Location|H2 #Local 2]] #Level 2
+
+### ![[Level 3 Location|H3 #Local 3]] #Level 3
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            doc.span_refs,
+            SpanRefs {
+                tags: None,
+                filters: None,
+                embeds: Some(HashSet::from([
+                    "Level 2 Location".to_string(),
+                    "Level 3 Location".to_string()
+                ]))
+            }
+        );
+        assert_eq!(
+            doc.blocks,
+            IndexMap::from([(
+                (
+                    Label::Heading(HRel(1), Id::Label("h1".to_string())),
+                    Some(0)
+                ),
+                Block::H(
+                    None,
+                    HType::H1,
+                    vec![Span::Text("H1")],
+                    IndexMap::from([(
+                        (
+                            Label::Heading(HRel(1), Id::Label("h2".to_string())),
+                            Some(0)
+                        ),
+                        Block::H(
+                            None,
+                            HType::H2,
+                            vec![
+                                Span::Link(
+                                    "Level 2 Location",
+                                    true,
+                                    SpanRefs {
+                                        tags: Some(IndexMap::from([(
+                                            "local".to_string(),
+                                            vec![
+                                                HashTag::Str("local".to_string()),
+                                                HashTag::Space,
+                                                HashTag::Num(2)
+                                            ]
+                                        )])),
+                                        filters: None,
+                                        embeds: None
+                                    },
+                                    vec![Span::Text("H2 "), Span::Hash(None, "Local 2")],
+                                    None
+                                ),
+                                Span::Text(" "),
+                                Span::Hash(None, "Level 2")
+                            ],
+                            IndexMap::from([(
+                                (
+                                    Label::Heading(HRel(1), Id::Label("h3".to_string())),
+                                    Some(0)
+                                ),
+                                Block::H(
+                                    None,
+                                    HType::H3,
+                                    vec![
+                                        Span::Link(
+                                            "Level 3 Location",
+                                            true,
+                                            SpanRefs {
+                                                tags: Some(IndexMap::from([(
+                                                    "local".to_string(),
+                                                    vec![
+                                                        HashTag::Str("local".to_string()),
+                                                        HashTag::Space,
+                                                        HashTag::Num(3)
+                                                    ]
+                                                )])),
+                                                filters: None,
+                                                embeds: None
+                                            },
+                                            vec![Span::Text("H3 "), Span::Hash(None, "Local 3")],
+                                            None
+                                        ),
+                                        Span::Text(" "),
+                                        Span::Hash(None, "Level 3"),
+                                        Span::Text("\n"),
+                                    ],
+                                    IndexMap::from([]),
+                                    SpanRefs {
+                                        tags: Some(IndexMap::from([(
+                                            "level".to_string(),
+                                            vec![
+                                                HashTag::Str("level".to_string()),
+                                                HashTag::Space,
+                                                HashTag::Num(3)
+                                            ]
+                                        )])),
+                                        filters: None,
+                                        embeds: None
+                                    }
+                                )
+                            )]),
+                            SpanRefs {
+                                tags: Some(IndexMap::from([(
+                                    "level".to_string(),
+                                    vec![
+                                        HashTag::Str("level".to_string()),
+                                        HashTag::Space,
+                                        HashTag::Num(2)
+                                    ]
+                                )])),
+                                filters: None,
+                                embeds: None
+                            }
+                        )
+                    )]),
+                    SpanRefs {
+                        tags: None,
+                        filters: None,
+                        embeds: None
+                    }
+                )
+            )])
+        );
+    }
 }
