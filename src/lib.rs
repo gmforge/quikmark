@@ -13,11 +13,6 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 
-// TODO: create composible block type/struct that can be used by heading, list block,
-// and div so they can utilizen hash tags and filters produced by spans. Note
-// list will group hash filters in different structural orders.
-// Headings will have a embedded link feature and indexing on top of hash structures.
-
 // Keep track of block starts, especially blocks off of root as they represent contained sections
 // of isolated changes. These start points are important for long logs where only want to render
 // a section of the document and know that any previous text before the start point will not
@@ -508,9 +503,9 @@ fn at_boundary_end<'a>(closer: &'a str, input: &'a str) -> IResult<&'a str, &'a 
 
 // LinkDlmr  = _{ "|" | &("]" | NEWLINE | EOI) }
 // Locator   =  { (("\\" | !LinkDlmr) ~ ANY)+ }
+// Removed pipe
 fn locator(input: &str) -> IResult<&str, &str> {
-    let (i, l) = is_not("|]")(input)?;
-    let (i, _) = opt(tag("|"))(i)?;
+    let (i, l) = terminated(is_not("]"), tag("]"))(input)?;
     Ok((i, l))
 }
 
@@ -662,7 +657,7 @@ impl SpanRefs {
         // spans/ss within the link may have hash tag filters,
         // which would only affect the link
         let mut local_span_refs = SpanRefs::default();
-        let (i, ss) = local_span_refs.spans(i, Some("]]"), None);
+        let (i, ss) = local_span_refs.spans(i, Some("]"), None);
         //let label = span_label(&hashtags(contents(&ss, false)));
         if embedded {
             let link = l.to_string();
@@ -1883,6 +1878,8 @@ fn copy_reduce_blocks<'a>(
 ) -> IndexMap<(Label, Option<usize>), Block<'a>> {
     let mut blocks: IndexMap<(Label, Option<usize>), Block<'a>> = IndexMap::new();
     for ((label, _version), source_block) in source.iter() {
+        // TODO: handle list renames by adding a tombstone entry for future merges/overwrites
+        // and adding a new entry with renamed label to current location.
         if let Some(block) = blocks.get_mut(&(label.clone(), None)) {
             merge_block(filters, block, source_block);
         } else if let Block::H(_, _, _, _, ref refs) = &source_block {
@@ -2235,7 +2232,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_with_location_and_text_super() {
-        let doc = parse("left [[loc|text^SUP^]] right").unwrap();
+        let doc = parse("left [[loc]text^SUP^] right").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2271,7 +2268,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_link_with_location_and_span() {
-        let doc = parse("left ![[Loc|text `Verbatim`]] right").unwrap();
+        let doc = parse("left ![[Loc]text `Verbatim`] right").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -3678,7 +3675,7 @@ doc > h1 > h2b // No change
 
     #[test]
     fn test_content_and_hashtag_index_of_block_paragraph_link_with_location_and_span() {
-        let doc = parse("Left \\\n![[loC|text-32 `-32v` [*a[_B_]*]]] Right #Level 1 \n").unwrap();
+        let doc = parse("Left \\\n![[loC]text-32 `-32v` [*a[_B_]*]] Right #Level 1 \n").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -3771,7 +3768,7 @@ doc > h1 > h2b // No change
 
     #[test]
     fn test_hashtag_index_of_block_heading_link_span() {
-        let doc = parse("# ![[loc|Level 0]]").unwrap();
+        let doc = parse("# ![[loc]Level 0]").unwrap();
         if let Some(((label, Some(0)), Block::H(attrs, htype, ss, _, _))) = &doc.blocks.get_index(0)
         {
             assert_eq!(
@@ -4063,9 +4060,9 @@ doc > h1 > d1
         let doc = parse(
             r#"# H1
 
-## ![[Level 2 Location|H2 #Local 2]] #Level 2
+## ![[Level 2 Location]H2 #Local 2] #Level 2
 
-### ![[Level 3 Location|H3 #Local 3]] #Level 3
+### ![[Level 3 Location]H3 #Local 3] #Level 3
 "#,
         )
         .unwrap();
