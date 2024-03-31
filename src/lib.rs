@@ -83,10 +83,24 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum HashOp {
     NotEqual,
-    Equal,
-    GreaterThan,
     LessThan,
+    LessThanOrEqual,
+    Equal,
+    GreaterThanOrEqual,
+    GreaterThan,
 }
+
+fn hashop(input: &str) -> IResult<&str, HashOp> {
+    alt((
+        value(HashOp::NotEqual, tag("!")),
+        value(HashOp::LessThan, tag("<")),
+        value(HashOp::LessThanOrEqual, tag("≤")),
+        value(HashOp::Equal, tag("=")),
+        value(HashOp::GreaterThanOrEqual, tag("≥")),
+        value(HashOp::GreaterThan, tag(">")),
+    ))(input)
+}
+
 // Strong      =  { "*" }
 // Emphasis    =  { "_" }
 // Superscript =  { "^" }
@@ -301,18 +315,28 @@ fn hashcmp(op: HashOp, filter: &Vec<HashTag>, tags: &Vec<HashTag>) -> bool {
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
-        HashOp::GreaterThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 > d1,
-            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
-            _ => false,
-        },
         HashOp::LessThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 < d1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
+        HashOp::LessThanOrEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 <= d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
         HashOp::Equal => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 == d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
+        HashOp::GreaterThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 > d1,
+            (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            _ => false,
+        },
+        HashOp::GreaterThanOrEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
+            (HashTag::Num(d1), HashTag::Num(d2)) => d2 >= d1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
@@ -546,14 +570,8 @@ impl SpanRefs {
 
     // HashTag   =  { Edge ~ Hash ~ Location }
     fn hash<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
-        let (i, (filter, h)) = tuple((opt(is_a("!<>=")), preceded(tag("#"), hash_field)))(input)?;
-        filter.map_or(Ok((i, Span::Hash(None, h))), move |f| match f {
-            "!" => Ok((i, Span::Hash(Some(HashOp::NotEqual), h))),
-            "<" => Ok((i, Span::Hash(Some(HashOp::LessThan), h))),
-            "=" => Ok((i, Span::Hash(Some(HashOp::Equal), h))),
-            ">" => Ok((i, Span::Hash(Some(HashOp::GreaterThan), h))),
-            _ => Ok((i, Span::Hash(None, h))),
-        })
+        let (i, (filter, h)) = tuple((opt(hashop), preceded(tag("#"), hash_field)))(input)?;
+        Ok((i, Span::Hash(filter, h)))
     }
 
     // UnboundTag  = _{
