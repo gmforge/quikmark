@@ -1168,7 +1168,7 @@ fn number_span(input: &str) -> IResult<&str, Vec<Span<'_>>> {
 }
 
 fn ratio(input: &str) -> IResult<&str, Vec<Span<'_>>> {
-    let (i, (r1, r2)) = separated_pair(digit1, char(':'), digit1)(input)?;
+    let (i, (r1, d, r2)) = tuple((digit1, alt((tag(":"), tag("/"))), digit1))(input)?;
     let num1 = r1.parse::<isize>().map_err(|_| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
     })?;
@@ -1179,7 +1179,7 @@ fn ratio(input: &str) -> IResult<&str, Vec<Span<'_>>> {
         i,
         vec![
             Span::Num(Some(r1), num1),
-            Span::Text(":"),
+            Span::Text(d),
             Span::Num(Some(r2), num2),
         ],
     ))
