@@ -80,6 +80,12 @@ static SPANS: phf::Map<char, &'static str> = phf_map! {
     '-' => "Delete",
 };
 
+// NotEqual           = { "!" }
+// LessThan           = { "<" }
+// LessThanOrEqual    = { "≤" }
+// Equal              = { "=" }
+// GreaterThanOrEqual = { "≥" }
+// GreaterThan        = { ">" }
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum HashOp {
     NotEqual,
@@ -192,6 +198,9 @@ pub enum HashTag {
     // leaving two separate Numbers and loss of
     // their association.
     Num(isize),
+    // All text within parentheses act as a subgroup
+    // for matching
+    Sub(String),
 }
 
 impl fmt::Display for HashTag {
@@ -200,6 +209,7 @@ impl fmt::Display for HashTag {
             Self::Space => write!(f, "-"),
             Self::Str(s) => write!(f, "{}", &s),
             Self::Num(n) => write!(f, "{n}"),
+            Self::Sub(n) => write!(f, "{n}"),
         }
     }
 }
@@ -215,7 +225,13 @@ fn anychar_as_str(input: &str) -> IResult<&str, &str> {
 }
 
 fn filter_out_numbers(input: &str) -> IResult<&str, Vec<&str>> {
-    let (i, v) = many0(preceded(opt(number), anychar_as_str))(input)?;
+    let (i, v) = many0(preceded(
+        opt(alt((
+            number,
+            preceded(tag("("), terminated(tag(")"), is_not(")"))),
+        ))),
+        anychar_as_str,
+    ))(input)?;
     return Ok((i, v));
 }
 
@@ -272,6 +288,7 @@ fn htlabel(hts: &Vec<HashTag>) -> String {
                 s += &a.to_lowercase();
             }
             HashTag::Num(_) => (),
+            HashTag::Sub(_) => (),
         }
     }
     // For empty lables that only contain numerical values
@@ -289,6 +306,7 @@ pub fn span_label(hts: &Vec<HashTag>) -> String {
             HashTag::Space => s += "-",
             HashTag::Str(a) => s += &a.to_lowercase(),
             HashTag::Num(n) => s += &n.to_string(),
+            HashTag::Sub(np) => s += &np.to_lowercase(),
         }
     }
     if s.is_empty() {
@@ -312,31 +330,37 @@ fn hashcmp(op: HashOp, filter: &Vec<HashTag>, tags: &Vec<HashTag>) -> bool {
     let cmp = match op {
         HashOp::NotEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 != d1,
+            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 != s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
         HashOp::LessThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 < d1,
+            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
         HashOp::LessThanOrEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 <= d1,
+            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
         HashOp::Equal => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 == d1,
+            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
         HashOp::GreaterThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 > d1,
+            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
         HashOp::GreaterThanOrEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
             (HashTag::Num(d1), HashTag::Num(d2)) => d2 >= d1,
+            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
             _ => false,
         },
@@ -415,7 +439,7 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                                 hts.push(HashTag::Space);
                                 ht = Some(HashTag::Str(cd.to_string()));
                             }
-                            Some(HashTag::Num(_)) | None => {
+                            Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
                                 ht = Some(HashTag::Str(cd.to_string()));
                             }
                         }
@@ -430,8 +454,22 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                             hts.push(HashTag::Space);
                             ht = Some(HashTag::Str(a.to_string()));
                         }
-                        Some(HashTag::Num(_)) | None => {
+                        Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
                             ht = Some(HashTag::Str(a.to_string()));
+                        }
+                    }
+                    i = c;
+                } else if let Ok((c, _p)) =
+                    terminated(tag(")"), preceded(tag("("), is_not::<&str, &str, ()>(")")))(i)
+                {
+                    match ht {
+                        Some(HashTag::Str(s)) => {
+                            hts.push(HashTag::Str(s.to_lowercase()));
+                            ht = Some(HashTag::Space);
+                        }
+                        Some(HashTag::Space) => {}
+                        Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
+                            ht = Some(HashTag::Space);
                         }
                     }
                     i = c;
@@ -442,7 +480,7 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                             ht = Some(HashTag::Space);
                         }
                         Some(HashTag::Space) => {}
-                        Some(HashTag::Num(_)) | None => {
+                        Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
                             ht = Some(HashTag::Space);
                         }
                     }
@@ -455,7 +493,7 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                                 ht = Some(HashTag::Space);
                             }
                             Some(HashTag::Space) => {}
-                            Some(HashTag::Num(_)) | None => {
+                            Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
                                 ht = Some(HashTag::Space);
                             }
                         }
@@ -468,7 +506,7 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                                 hts.push(HashTag::Space);
                                 ht = Some(HashTag::Str(a.to_string()));
                             }
-                            Some(HashTag::Num(_)) | None => {
+                            Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
                                 ht = Some(HashTag::Str(a.to_string()));
                             }
                         }
@@ -485,6 +523,26 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
     hts
 }
 
+// Hash Fields do not span multiple lines
+// Hash Fields may not include other Hash Tags or Hash filters.
+//   Hash               = { "#" }
+//   NotEqual           = { "!#" }
+//   LessThan           = { "<#" }
+//   LessThanOrEqual    = { "≤#" }
+//   Equal              = { "=#" }
+//   GreaterThanOrEqual = { "≥#" }
+//   GreaterThan        = { ">#" }
+//
+// Hash Fields may not include the current closing tag.
+//   Link        = { "]" }
+//   Strong      = { "*" }
+//   Emphasis    = { "_" }
+//   Superscript = { "^" }
+//   Subscript   = { "~" }
+//   Verbatim    = { "`"+ }
+//   Highlight   = { "=]" }
+//   Insert      = { "+]" }
+//   Delete      = { "-]" }
 fn hash_field(input: &str) -> IResult<&str, &str> {
     let (input, (v, _)) = consumed(tuple((is_not(" \t\n\r]#"), opt(is_not("\t\r\n]#")))))(input)?;
     // NOTE: We may want to add any trailing spaces that where trimmed  back to input
