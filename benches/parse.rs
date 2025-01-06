@@ -1,10 +1,10 @@
 extern crate qwikmark;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use qwikmark::document;
+use qwikmark::parse;
 
 pub fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("document definition list", |b| {
-        b.iter(|| document(black_box(": ab\n alpha\n: 12\n  digit\n  : ivn    roman")))
+        b.iter(|| parse(black_box(": ab\n alpha\n: 12\n  digit\n  : ivn    roman")))
     });
 }
 

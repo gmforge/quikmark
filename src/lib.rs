@@ -2,9 +2,9 @@ use indexmap::IndexMap;
 use nom::branch::alt;
 use nom::bytes::complete::{is_a, is_not, tag, take_while1, take_while_m_n};
 use nom::character::complete::{
-    alpha1, anychar, char, digit1, line_ending, multispace1, not_line_ending, space0, space1,
+    alpha1, anychar, digit1, line_ending, multispace1, not_line_ending, space0, space1,
 };
-use nom::combinator::{cond, consumed, eof, not, opt, peek, value};
+use nom::combinator::{all_consuming, cond, consumed, eof, not, opt, peek, value};
 use nom::multi::{many0, many1, separated_list1};
 use nom::sequence::{delimited, preceded, separated_pair, terminated, tuple};
 use nom::IResult;
@@ -68,17 +68,17 @@ fn attributes(input: &str) -> IResult<&str, IndexMap<&str, &str>> {
 
 // SPANS
 
-static SPANS: phf::Map<char, &'static str> = phf_map! {
-    '*' => "Strong",
-    '_' => "Emphasis",
-    '^' => "Superscript",
-    '~' => "Subscript",
-    '#' => "Hash",
-    '`' => "Verbatim",
-    '=' => "Highlight",
-    '+' => "Insert",
-    '-' => "Delete",
-};
+// static SPANS: phf::Map<char, &'static str> = phf_map! {
+//     '*' => "Strong",
+//     '_' => "Emphasis",
+//     '^' => "Superscript",
+//     '~' => "Subscript",
+//     '#' => "Hash",
+//     '`' => "Verbatim",
+//     '=' => "Highlight",
+//     '+' => "Insert",
+//     '-' => "Delete",
+// };
 
 // NotEqual           = { "!" }
 // LessThan           = { "<" }
@@ -167,7 +167,6 @@ fn span_with_attributes<'a>(span: Span<'a>, kvs: IndexMap<&'a str, &'a str>) -> 
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct HashFilter {
-    index: String,
     op: HashOp,
     tags: Vec<HashTag>,
 }
@@ -180,7 +179,7 @@ pub struct HashFilter {
 //}
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
-pub enum HashTag {
+pub enum IndexTag {
     // All adjacent non alphanumerical content
     // will be turned into a space which will
     // be represented in the hashtag as a single
@@ -203,13 +202,40 @@ pub enum HashTag {
     Sub(String),
 }
 
-impl fmt::Display for HashTag {
+impl fmt::Display for IndexTag {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Space => write!(f, "-"),
             Self::Str(s) => write!(f, "{}", &s),
             Self::Num(n) => write!(f, "{n}"),
-            Self::Sub(n) => write!(f, "{n}"),
+            Self::Sub(s) => write!(f, "{}", &s),
+        }
+    }
+}
+
+// A hash may be separated into path segments "/"
+// where each segment acting as a subgroup of the parent.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
+pub enum HashTag {
+    // All numerical data will be turned into a
+    // signed integer and represented a string of
+    // numerical characters preceded with a single
+    // dash "-" if negative.
+    Int(isize),
+    // All adjacent non-alphanumerical content
+    // will be turned into a space which will
+    // be represented in the hashtag as a single
+    // dash "-" character.
+    // All adjacent alphanumerical content will be concatenated
+    // into a string value
+    Str(String),
+}
+
+impl fmt::Display for HashTag {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Str(s) => write!(f, "{}", &s),
+            Self::Int(n) => write!(f, "{n}"),
         }
     }
 }
@@ -235,7 +261,8 @@ fn filter_out_numbers(input: &str) -> IResult<&str, Vec<&str>> {
     return Ok((i, v));
 }
 
-// Contents concatenates the text within the nested vectors of spans
+// Contents concatenates the text within the nested vectors of spans.
+// The vector of text can then be used to generate indextags.
 fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
     outer
         .iter()
@@ -272,23 +299,38 @@ fn contents<'a>(outer: &Vec<Span<'a>>, label: bool) -> Vec<&'a str> {
         })
 }
 
+fn hash_label(hts: &Vec<HashTag>) -> String {
+    let mut label = String::new();
+    for ht in hts {
+        if label.len() > 0 {
+            label += "/"
+        }
+        match ht {
+            HashTag::Str(s) => label += s,
+            HashTag::Int(n) => label += &n.to_string(),
+        }
+    }
+    label
+}
+
+// TODO: May need to convert this back to HashTags and remove all subtags and Int types
 // Hash tag labels generates indexes of hash tags minus any span formatting,
-// nor numerical values, so that ranges of hashtags may be compared.
-fn htlabel(hts: &Vec<HashTag>) -> String {
+// nor numerical values, so that ranges of indextags may be compared.
+fn index_label(hts: &Vec<IndexTag>) -> String {
     let mut s = String::new();
     let mut space = false;
     for ht in hts {
         match ht {
-            HashTag::Space => space = true,
-            HashTag::Str(a) => {
+            IndexTag::Space => space = true,
+            IndexTag::Str(a) => {
                 if space {
                     s += "-";
                     space = false;
                 }
                 s += &a.to_lowercase();
             }
-            HashTag::Num(_) => (),
-            HashTag::Sub(_) => (),
+            IndexTag::Num(_) => (),
+            IndexTag::Sub(_) => (),
         }
     }
     // For empty lables that only contain numerical values
@@ -299,14 +341,14 @@ fn htlabel(hts: &Vec<HashTag>) -> String {
 }
 
 // span label generates indexes used to compare content minus any span formatting.
-pub fn span_label(hts: &Vec<HashTag>) -> String {
+pub fn span_label(hts: &Vec<IndexTag>) -> String {
     let mut s = String::new();
     for ht in hts {
         match ht {
-            HashTag::Space => s += "-",
-            HashTag::Str(a) => s += &a.to_lowercase(),
-            HashTag::Num(n) => s += &n.to_string(),
-            HashTag::Sub(np) => s += &np.to_lowercase(),
+            IndexTag::Space => s += "-",
+            IndexTag::Str(a) => s += &a.to_lowercase(),
+            IndexTag::Num(n) => s += &n.to_string(),
+            IndexTag::Sub(np) => s += &np.to_lowercase(),
         }
     }
     if s.is_empty() {
@@ -326,49 +368,45 @@ fn punctuation(input: &str) -> IResult<&str, &str> {
     is_a(r#"_~`'"\,;!¡?¿"#)(input)
 }
 
+// Multi-level tag comparison. Requires a tag match and comparison. 
 fn hashcmp(op: HashOp, filter: &Vec<HashTag>, tags: &Vec<HashTag>) -> bool {
-    let cmp = match op {
+  // Multi-level comparison
+  let cmp = match op {
         HashOp::NotEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 != d1,
-            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 != s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            (HashTag::Int(d1), HashTag::Int(d2)) => d2 != d1,
             _ => false,
         },
         HashOp::LessThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 < d1,
-            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            (HashTag::Int(d1), HashTag::Int(d2)) => d2 < d1,
             _ => false,
         },
         HashOp::LessThanOrEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 <= d1,
-            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            (HashTag::Int(d1), HashTag::Int(d2)) => d2 <= d1,
             _ => false,
         },
         HashOp::Equal => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 == d1,
-            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            (HashTag::Int(d1), HashTag::Int(d2)) => d2 == d1,
             _ => false,
         },
         HashOp::GreaterThan => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 > d1,
-            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            (HashTag::Int(d1), HashTag::Int(d2)) => d2 > d1,
             _ => false,
         },
         HashOp::GreaterThanOrEqual => |tag1: &HashTag, tag2: &HashTag| match (tag1, tag2) {
-            (HashTag::Num(d1), HashTag::Num(d2)) => d2 >= d1,
-            (HashTag::Sub(s1), HashTag::Str(s2)) => s2 == s1,
             (HashTag::Str(s1), HashTag::Str(s2)) => s2 == s1,
+            (HashTag::Int(d1), HashTag::Int(d2)) => d2 >= d1,
             _ => false,
         },
     };
-    let filter_no_spaces = filter.iter().filter(|f: &&HashTag| **f != HashTag::Space);
-    let mut tags_no_spaces = tags.iter().filter(|t: &&HashTag| **t != HashTag::Space);
-    for f in filter_no_spaces {
-        if let Some(t) = tags_no_spaces.next() {
+    // let filter_no_spaces = filter.iter().filter(|f: &&HashTag| **f != HashTag::Space);
+    let mut tag_walk = tags.iter(); //.filter(|t: &&HashTag| **t != HashTag::Space);
+    for f in filter.iter() {
+        if let Some(t) = tag_walk.next() {
             if !cmp(f, t) {
                 return false;
             }
@@ -383,7 +421,7 @@ fn allow(filters: &Vec<Vec<HashFilter>>, tags: &Option<IndexMap<String, Vec<Hash
     if let Some(ts) = tags {
         for fs in filters {
             for f in fs {
-                if let Some(ref t) = &ts.get(&f.index) {
+                if let Some(ref t) = ts.get(&hash_label(&f.tags)) {
                     if !hashcmp(f.op, &f.tags, t) {
                         return false;
                     }
@@ -394,9 +432,24 @@ fn allow(filters: &Vec<Vec<HashFilter>>, tags: &Option<IndexMap<String, Vec<Hash
     true
 }
 
-// Tags turns contents into hash tags type that may be used for ordering
+pub fn hashtags(input: &str) -> Vec<HashTag> {
+    let mut hts: Vec<HashTag>= Vec::new();
+    if let Ok((_, tags)) = many0(tuple((opt(tag::<&str, &str, ()>("/")), is_not("/"))))(input) {
+        for (_p, ht) in tags.iter() {
+            if let Ok(d) = ht.parse::<isize>() {
+                hts.push(HashTag::Int(d));
+            } else {
+                // TODO: trim, turn whitespace into spaces, squeeze spaces, and then turn space into dash.
+                hts.push(HashTag::Str(ht.to_string().to_lowercase()));
+            }
+        }
+    }
+    hts
+}
+
+// Tags turns contents into index tags type that may be used for ordering
 // anchor strings for referencing/indexing, or filtering.
-pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
+pub fn indextags(input: Vec<&str>) -> Vec<IndexTag> {
     let (mut hts, ht) = input
         .iter()
         .fold((Vec::new(), None), |(mut hts, mut ht), c| {
@@ -410,52 +463,52 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                     digit1,
                 )))(i)
                 {
-                    let (d, dash_is_space) = if let Some(HashTag::Str(_)) = ht {
+                    let (d, dash_is_space) = if let Some(IndexTag::Str(_)) = ht {
                         (d, true)
                     } else {
                         (cd, false)
                     };
                     if let Ok(d) = d.parse::<isize>() {
                         if let Some(oht) = ht {
-                            if let HashTag::Str(s) = oht {
-                                hts.push(HashTag::Str(s.to_lowercase()));
+                            if let IndexTag::Str(s) = oht {
+                                hts.push(IndexTag::Str(s.to_lowercase()));
                             } else {
                                 hts.push(oht);
                             }
                             if let (true, Some(_)) = (dash_is_space, n) {
-                                hts.push(HashTag::Space);
+                                hts.push(IndexTag::Space);
                             }
                             ht = None;
                         } else if let (Some(_), 0) = (n, hts.len()) {
-                            hts.push(HashTag::Space);
+                            hts.push(IndexTag::Space);
                         }
-                        hts.push(HashTag::Num(d));
+                        hts.push(IndexTag::Num(d));
                     } else {
                         match ht {
-                            Some(HashTag::Str(nas)) => {
-                                ht = Some(HashTag::Str(nas + cd));
+                            Some(IndexTag::Str(nas)) => {
+                                ht = Some(IndexTag::Str(nas + cd));
                             }
-                            Some(HashTag::Space) => {
-                                hts.push(HashTag::Space);
-                                ht = Some(HashTag::Str(cd.to_string()));
+                            Some(IndexTag::Space) => {
+                                hts.push(IndexTag::Space);
+                                ht = Some(IndexTag::Str(cd.to_string()));
                             }
-                            Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
-                                ht = Some(HashTag::Str(cd.to_string()));
+                            Some(IndexTag::Num(_)) | Some(IndexTag::Sub(_)) | None => {
+                                ht = Some(IndexTag::Str(cd.to_string()));
                             }
                         }
                     }
                     i = c;
                 } else if let Ok((c, a)) = alpha1::<&str, ()>(i) {
                     match ht {
-                        Some(HashTag::Str(nas)) => {
-                            ht = Some(HashTag::Str(nas + a));
+                        Some(IndexTag::Str(nas)) => {
+                            ht = Some(IndexTag::Str(nas + a));
                         }
-                        Some(HashTag::Space) => {
-                            hts.push(HashTag::Space);
-                            ht = Some(HashTag::Str(a.to_string()));
+                        Some(IndexTag::Space) => {
+                            hts.push(IndexTag::Space);
+                            ht = Some(IndexTag::Str(a.to_string()));
                         }
-                        Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
-                            ht = Some(HashTag::Str(a.to_string()));
+                        Some(IndexTag::Num(_)) | Some(IndexTag::Sub(_)) | None => {
+                            ht = Some(IndexTag::Str(a.to_string()));
                         }
                     }
                     i = c;
@@ -463,51 +516,51 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
                     terminated(tag(")"), preceded(tag("("), is_not::<&str, &str, ()>(")")))(i)
                 {
                     match ht {
-                        Some(HashTag::Str(s)) => {
-                            hts.push(HashTag::Str(s.to_lowercase()));
-                            ht = Some(HashTag::Space);
+                        Some(IndexTag::Str(s)) => {
+                            hts.push(IndexTag::Str(s.to_lowercase()));
+                            ht = Some(IndexTag::Space);
                         }
-                        Some(HashTag::Space) => {}
-                        Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
-                            ht = Some(HashTag::Space);
+                        Some(IndexTag::Space) => {}
+                        Some(IndexTag::Num(_)) | Some(IndexTag::Sub(_)) | None => {
+                            ht = Some(IndexTag::Space);
                         }
                     }
                     i = c;
                 } else if let Ok((c, _s)) = alt((multispace1, value(" ", punctuation)))(i) {
                     match ht {
-                        Some(HashTag::Str(s)) => {
-                            hts.push(HashTag::Str(s.to_lowercase()));
-                            ht = Some(HashTag::Space);
+                        Some(IndexTag::Str(s)) => {
+                            hts.push(IndexTag::Str(s.to_lowercase()));
+                            ht = Some(IndexTag::Space);
                         }
-                        Some(HashTag::Space) => {}
-                        Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
-                            ht = Some(HashTag::Space);
+                        Some(IndexTag::Space) => {}
+                        Some(IndexTag::Num(_)) | Some(IndexTag::Sub(_)) | None => {
+                            ht = Some(IndexTag::Space);
                         }
                     }
                     i = c;
                 } else if let Ok((c, (a, _))) = consumed(anychar::<&str, ()>)(i) {
                     if a == "-" || a == "+" {
                         match ht {
-                            Some(HashTag::Str(s)) => {
-                                hts.push(HashTag::Str(s.to_lowercase()));
-                                ht = Some(HashTag::Space);
+                            Some(IndexTag::Str(s)) => {
+                                hts.push(IndexTag::Str(s.to_lowercase()));
+                                ht = Some(IndexTag::Space);
                             }
-                            Some(HashTag::Space) => {}
-                            Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
-                                ht = Some(HashTag::Space);
+                            Some(IndexTag::Space) => {}
+                            Some(IndexTag::Num(_)) | Some(IndexTag::Sub(_)) | None => {
+                                ht = Some(IndexTag::Space);
                             }
                         }
                     } else {
                         match ht {
-                            Some(HashTag::Str(nas)) => {
-                                ht = Some(HashTag::Str(nas + a));
+                            Some(IndexTag::Str(nas)) => {
+                                ht = Some(IndexTag::Str(nas + a));
                             }
-                            Some(HashTag::Space) => {
-                                hts.push(HashTag::Space);
-                                ht = Some(HashTag::Str(a.to_string()));
+                            Some(IndexTag::Space) => {
+                                hts.push(IndexTag::Space);
+                                ht = Some(IndexTag::Str(a.to_string()));
                             }
-                            Some(HashTag::Num(_)) | Some(HashTag::Sub(_)) | None => {
-                                ht = Some(HashTag::Str(a.to_string()));
+                            Some(IndexTag::Num(_)) | Some(IndexTag::Sub(_)) | None => {
+                                ht = Some(IndexTag::Str(a.to_string()));
                             }
                         }
                     }
@@ -517,8 +570,8 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
             (hts, ht)
         });
     // Do NOT push last space, only remain string
-    if let Some(HashTag::Str(s)) = ht {
-        hts.push(HashTag::Str(s.to_lowercase()));
+    if let Some(IndexTag::Str(s)) = ht {
+        hts.push(IndexTag::Str(s.to_lowercase()));
     }
     hts
 }
@@ -526,12 +579,13 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
 // Hash Fields do not span multiple lines
 // Hash Fields may not include other Hash Tags or Hash filters.
 //   Hash               = { "#" }
-//   NotEqual           = { "!#" }
-//   LessThan           = { "<#" }
-//   LessThanOrEqual    = { "≤#" }
-//   Equal              = { "=#" }
-//   GreaterThanOrEqual = { "≥#" }
-//   GreaterThan        = { ">#" }
+//   Path               = { "#/" }
+//   NotEqual           = { "#!" }
+//   LessThan           = { "#<" }
+//   LessThanOrEqual    = { "#≤" }
+//   Equal              = { "#=" }
+//   GreaterThanOrEqual = { "#≥" }
+//   GreaterThan        = { "#>" }
 //
 // Hash Fields may not include the current closing tag.
 //   Link        = { "]" }
@@ -544,9 +598,9 @@ pub fn hashtags(input: Vec<&str>) -> Vec<HashTag> {
 //   Insert      = { "+]" }
 //   Delete      = { "-]" }
 fn hash_field(input: &str) -> IResult<&str, &str> {
-    let (input, (v, _)) = consumed(tuple((is_not(" \t\n\r]#"), opt(is_not("\t\r\n]#")))))(input)?;
-    // NOTE: We may want to add any trailing spaces that where trimmed  back to input
-    // as that could end up joining  words together that where seperated by closing tags.
+    let (input, (v, _)) = consumed(is_not("\n\r]#"))(input)?;
+    // NOTE: We may want to add any trailing spaces that where trimmed back to input
+    // as that could end up joining words together that where seperated by closing tags.
     let v = v.trim();
     Ok((input, v))
 }
@@ -628,7 +682,7 @@ impl SpanRefs {
 
     // HashTag   =  { Edge ~ Hash ~ Location }
     fn hash<'a, 'b>(&'a mut self, input: &'b str) -> IResult<&'b str, Span<'b>> {
-        let (i, (filter, h)) = tuple((opt(hashop), preceded(tag("#"), hash_field)))(input)?;
+        let (i, (filter, h)) = preceded(tag("#"), tuple((opt(hashop), hash_field)))(input)?;
         Ok((i, Span::Hash(filter, h)))
     }
 
@@ -734,7 +788,7 @@ impl SpanRefs {
         // which would only affect the link
         let mut local_span_refs = SpanRefs::default();
         let (i, ss) = local_span_refs.spans(i, Some("]"), None);
-        //let label = span_label(&hashtags(contents(&ss, false)));
+        //let label = span_label(&indextags(contents(&ss, false)));
         if embedded {
             let link = l.to_string();
             if let Some(es) = &mut self.embeds {
@@ -843,11 +897,9 @@ impl SpanRefs {
                     // Bundle hash tag/filter to return to associated heading.
                     Span::Hash(op, ht) => {
                         ss.push(s);
-                        let tags = hashtags(vec![ht]);
-                        let label = htlabel(&tags);
+                        let tags = hashtags(ht);
                         if let Some(op) = op {
                             let hf = HashFilter {
-                                index: label,
                                 op,
                                 tags,
                             };
@@ -857,10 +909,10 @@ impl SpanRefs {
                                 self.filters = Some(vec![hf]);
                             }
                         } else if let Some(ref mut hts) = self.tags {
-                            hts.insert(label, tags);
+                            hts.insert(hash_label(&tags), tags);
                         } else {
                             let mut hts = IndexMap::new();
-                            hts.insert(label, tags);
+                            hts.insert(hash_label(&tags), tags);
                             self.tags = Some(hts);
                         }
                     }
@@ -1428,7 +1480,8 @@ fn list_item<'a>(
                 (
                     Label::ListItem(
                         LType::Definition,
-                        Id::Label(span_label(&hashtags(contents(&vs, false)))),
+                        Id::Label(span_label(&indextags
+                        (contents(&vs, false)))),
                     ),
                     Block::LI(n, vs, ls),
                 ),
@@ -1445,7 +1498,8 @@ fn list_item<'a>(
                 (
                     Label::ListItem(
                         LType::Unordered,
-                        Id::Label(span_label(&hashtags(contents(&ss, true)))),
+                        Id::Label(span_label(&indextags
+                        (contents(&ss, true)))),
                     ),
                     Block::LI(n, ss, ls),
                 ),
@@ -1465,7 +1519,8 @@ fn list_item<'a>(
                 (
                     Label::ListItem(
                         LType::Unordered,
-                        Id::Label(span_label(&hashtags(contents(&ss, true)))),
+                        Id::Label(span_label(&indextags
+                        (contents(&ss, true)))),
                     ),
                     Block::LI(n, ss, ls),
                 ),
@@ -1570,7 +1625,8 @@ fn blocks<'a>(
                     parent_span_refs.embeds = Some(ces);
                 }
             }
-            let div_index = span_label(&hashtags(vec![name]));
+            let div_index = span_label(&indextags
+            (vec![name]));
             let label = Label::Div(Id::Label(div_index));
             let mut version: usize = 0;
             while children.contains_key(&(label.clone(), Some(version))) {
@@ -1598,7 +1654,8 @@ fn blocks<'a>(
                     parent_span_refs.embeds = Some(ces);
                 }
             }
-            let head_index = span_label(&hashtags(contents(&head_spans, false)));
+            let head_index = span_label(&indextags
+            (contents(&head_spans, false)));
             let label =
                 Label::Heading(HRel((hl as usize) - (refs as usize)), Id::Label(head_index));
             let mut version: usize = 0;
@@ -2224,7 +2281,6 @@ mod tests {
             SpanRefs {
                 tags: None,
                 filters: Some(vec![HashFilter {
-                    index: "hash".to_string(),
                     op: HashOp::NotEqual,
                     tags: vec![HashTag::Str("hash".to_string())],
                 }]),
@@ -2248,7 +2304,7 @@ mod tests {
 
     #[test]
     fn test_block_paragraph_hash_field_newline() {
-        let doc = parse("left #hash 1 \nnext line").unwrap();
+        let doc = parse("left #hash/1 \nnext line").unwrap();
         assert_eq!(
             doc.span_refs,
             SpanRefs {
@@ -2256,8 +2312,7 @@ mod tests {
                     "hash".to_string(),
                     vec![
                         HashTag::Str("hash".to_string()),
-                        HashTag::Space,
-                        HashTag::Num(1)
+                        HashTag::Int(1)
                     ]
                 )])),
                 filters: None,
@@ -2272,7 +2327,7 @@ mod tests {
                     None,
                     vec![
                         Span::Text("left "),
-                        Span::Hash(None, "hash 1"),
+                        Span::Hash(None, "hash/1"),
                         Span::Text("\nnext line")
                     ],
                 )
@@ -2674,7 +2729,7 @@ mod tests {
     #[test]
     fn test_block_unordered_list() {
         let doc =
-            parse("- l1 #H 1\n\n- l2 #H 2\n\n  - l2,1 >#H 3\n\n  - l2,2 !#H 4\n\n    - l2,2,1\n\n  - l2,3\n\n- l3")
+            parse("- l1 #H/1\n\n- l2 #H/2\n\n  - l2,1 >#H/3\n\n  - l2,2 !#H/4\n\n    - l2,2,1\n\n  - l2,3\n\n- l3")
                 .unwrap();
         assert_eq!(
             doc.span_refs,
@@ -2683,27 +2738,22 @@ mod tests {
                     "h".to_string(),
                     vec![
                         HashTag::Str("h".to_string()),
-                        HashTag::Space,
-                        HashTag::Num(2)
+                        HashTag::Int(2)
                     ]
                 )])),
                 filters: Some(vec![
                     HashFilter {
-                        index: "h".to_string(),
                         op: HashOp::GreaterThan,
                         tags: vec![
                             HashTag::Str("h".to_string()),
-                            HashTag::Space,
-                            HashTag::Num(3)
+                            HashTag::Int(3)
                         ]
                     },
                     HashFilter {
-                        index: "h".to_string(),
                         op: HashOp::NotEqual,
                         tags: vec![
                             HashTag::Str("h".to_string()),
-                            HashTag::Space,
-                            HashTag::Num(4)
+                            HashTag::Int(4)
                         ]
                     }
                 ]),
@@ -2724,7 +2774,7 @@ mod tests {
                             ),
                             Block::LI(
                                 "-",
-                                vec![Span::Text("l1 "), Span::Hash(None, "H 1")],
+                                vec![Span::Text("l1 "), Span::Hash(None, "H/1")],
                                 IndexMap::from([]),
                             ),
                         ),
@@ -2735,7 +2785,7 @@ mod tests {
                             ),
                             Block::LI(
                                 "-",
-                                vec![Span::Text("l2 "), Span::Hash(None, "H 2")],
+                                vec![Span::Text("l2 "), Span::Hash(None, "H/2")],
                                 IndexMap::from([(
                                     (Label::List(Id::None), None),
                                     Block::L(
@@ -2755,7 +2805,7 @@ mod tests {
                                                         Span::Text("l2,1 "),
                                                         Span::Hash(
                                                             Some(HashOp::GreaterThan),
-                                                            "H 3"
+                                                            "H/3"
                                                         )
                                                     ],
                                                     IndexMap::from([])
@@ -2773,7 +2823,7 @@ mod tests {
                                                     "-",
                                                     vec![
                                                         Span::Text("l2,2 "),
-                                                        Span::Hash(Some(HashOp::NotEqual), "H 4")
+                                                        Span::Hash(Some(HashOp::NotEqual), "H/4")
                                                     ],
                                                     IndexMap::from([(
                                                         (Label::List(Id::None), None),
@@ -3201,7 +3251,7 @@ mod tests {
     #[test]
     fn test_block_header_singleline_unordered_list() {
         assert_eq!(
-            ast("## [*strong heading*]\n- l1 #Ha 1\n- l2 #Hb -1"),
+            ast("## [*strong heading*]\n- l1 #Ha/1\n- l2 #Hb/-1"),
             IndexMap::from([(
                 (
                     Label::Heading(HRel(2), Id::Label("strong-heading".to_string())),
@@ -3226,7 +3276,7 @@ mod tests {
                                     ),
                                     Block::LI(
                                         "-",
-                                        vec![Span::Text("l1 "), Span::Hash(None, "Ha 1")],
+                                        vec![Span::Text("l1 "), Span::Hash(None, "Ha/1")],
                                         IndexMap::from([])
                                     )
                                 ),
@@ -3240,7 +3290,7 @@ mod tests {
                                     ),
                                     Block::LI(
                                         "-",
-                                        vec![Span::Text("l2 "), Span::Hash(None, "Hb -1")],
+                                        vec![Span::Text("l2 "), Span::Hash(None, "Hb/-1")],
                                         IndexMap::from([])
                                     )
                                 )
@@ -3253,16 +3303,14 @@ mod tests {
                                 "ha".to_string(),
                                 vec![
                                     HashTag::Str("ha".to_string()),
-                                    HashTag::Space,
-                                    HashTag::Num(1)
+                                    HashTag::Int(1)
                                 ]
                             ),
                             (
                                 "hb".to_string(),
                                 vec![
                                     HashTag::Str("hb".to_string()),
-                                    HashTag::Space,
-                                    HashTag::Num(-1)
+                                    HashTag::Int(-1)
                                 ]
                             )
                         ])),
@@ -3759,8 +3807,7 @@ doc > h1 > h2b // No change
                     "level".to_string(),
                     vec![
                         HashTag::Str("level".to_string()),
-                        HashTag::Space,
-                        HashTag::Num(1)
+                        HashTag::Int(1)
                     ]
                 )])),
                 filters: None,
@@ -3810,29 +3857,30 @@ doc > h1 > h2b // No change
                     "e", "l", " ", "\n"
                 ]
             );
-            let hts = hashtags(ts);
+            let hts = indextags
+        (ts);
             assert_eq!(
                 hts,
                 vec![
-                    HashTag::Str("left".to_string()),
-                    HashTag::Space,
-                    HashTag::Str("text".to_string()),
-                    HashTag::Space,
-                    HashTag::Num(32),
-                    HashTag::Space,
-                    HashTag::Num(-32),
-                    HashTag::Str("v".to_string()),
-                    HashTag::Space,
-                    HashTag::Str("ab".to_string()),
-                    HashTag::Space,
-                    HashTag::Str("right".to_string()),
-                    HashTag::Space,
-                    HashTag::Str("level".to_string()),
+                    IndexTag::Str("left".to_string()),
+                    IndexTag::Space,
+                    IndexTag::Str("text".to_string()),
+                    IndexTag::Space,
+                    IndexTag::Num(32),
+                    IndexTag::Space,
+                    IndexTag::Num(-32),
+                    IndexTag::Str("v".to_string()),
+                    IndexTag::Space,
+                    IndexTag::Str("ab".to_string()),
+                    IndexTag::Space,
+                    IndexTag::Str("right".to_string()),
+                    IndexTag::Space,
+                    IndexTag::Str("level".to_string()),
                 ]
             );
             let s = span_label(&hts);
             assert_eq!(s, "left-text-32--32v-ab-right-level");
-            let s = htlabel(&hts);
+            let s = index_label(&hts);
             assert_eq!(s, "left-text-v-ab-right-level");
         } else {
             panic!(
@@ -3854,10 +3902,10 @@ doc > h1 > h2b // No change
             assert_eq!(*attrs, None);
             assert_eq!(*htype, HType::H1);
             let ts = contents(&ss, false);
-            let hts = hashtags(ts);
-            let s = span_label(&hts);
+            let its = indextags(ts);
+            let s = span_label(&its);
             assert_eq!(s, "level-0");
-            let s = htlabel(&hts);
+            let s = index_label(&its);
             assert_eq!(s, "level");
             assert_eq!(
                 doc.span_refs,
@@ -3883,10 +3931,10 @@ doc > h1 > h2b // No change
             assert_eq!(*attrs, None);
             assert_eq!(*htype, HType::H2);
             let ts = contents(&ss, false);
-            let hts = hashtags(ts);
-            let s = span_label(&hts);
+            let its = indextags(ts);
+            let s = span_label(&its);
             assert_eq!(s, "--33-32-31--30");
-            let s = htlabel(&hts);
+            let s = span_label(&its);
             assert_eq!(s, "-");
             assert_eq!(
                 *srs,
@@ -3905,15 +3953,13 @@ doc > h1 > h2b // No change
     fn test_hashtag_filter() {
         let t1 = vec![
             HashTag::Str("level".to_string()),
-            HashTag::Space,
-            HashTag::Num(1),
+            HashTag::Int(1),
         ];
         let t2 = vec![
             HashTag::Str("level".to_string()),
-            HashTag::Space,
-            HashTag::Num(2),
+            HashTag::Int(2),
         ];
-        let t3 = vec![HashTag::Str("level".to_string()), HashTag::Num(1)];
+        let t3 = vec![HashTag::Str("level".to_string()), HashTag::Int(1)];
         assert_eq!(true, hashcmp(HashOp::NotEqual, &t1, &t2));
         assert_eq!(true, hashcmp(HashOp::GreaterThan, &t1, &t2));
         assert_eq!(false, hashcmp(HashOp::LessThan, &t1, &t2));
@@ -3924,27 +3970,27 @@ doc > h1 > h2b // No change
     #[test]
     fn test_basic_copy_reduce() {
         let doc = parse(
-            r#"# H1 <#Level 4
+            r#"# H1 <#Level/4
 
 doc > h1
 
-## H2 #Level 1
+## H2 #Level/1
 
 doc > h1 > h2
 
 - [1] L1
 - [1] L2
 
-## H2 #Level 2
+## H2 #Level/2
 - [2] L2
 - [1] L3
 
-## H2 #Level 3
+## H2 #Level/3
 - L3
   - [ ] L3.1
 - [1] L4
 
-## H2 #Level 4
+## H2 #Level/4
 - [1] L5
 
 # H1
@@ -3976,7 +4022,7 @@ doc > h1 > d1
                             Block::H(
                                 None,
                                 HType::H2,
-                                vec![Span::Text("H2 "), Span::Hash(None, "Level 3")],
+                                vec![Span::Text("H2 "), Span::Hash(None, "Level/3")],
                                 IndexMap::from([
                                     (
                                         (Label::Paragraph(Id::None), None),
@@ -4098,7 +4144,7 @@ doc > h1 > d1
                                     )
                                 ]),
                                 SpanRefs {
-                                    tags: Some(IndexMap::from([("level".to_string(), vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(3)])])),
+                                    tags: Some(IndexMap::from([("level".to_string(), vec![HashTag::Str("level".to_string()), HashTag::Int(3)])])),
                                     filters: None,
                                     embeds: None
                                 }
@@ -4123,7 +4169,7 @@ doc > h1 > d1
                     ]),
                     SpanRefs {
                         tags: None,
-                        filters: Some(vec![HashFilter { index: "level".to_string(), op: HashOp::LessThan, tags: vec![HashTag::Str("level".to_string()), HashTag::Space, HashTag::Num(4)] }]),
+                        filters: Some(vec![HashFilter { op: HashOp::LessThan, tags: vec![HashTag::Str("level".to_string()), HashTag::Int(4)] }]),
                         embeds: None
                     }
                 )
@@ -4136,9 +4182,9 @@ doc > h1 > d1
         let doc = parse(
             r#"# H1
 
-## ![[Level 2 Location]H2 #Local 2] #Level 2
+## ![[Level 2 Location]H2 #Local/2] #Level/2
 
-### ![[Level 3 Location]H3 #Local 3] #Level 3
+### ![[Level 3 Location]H3 #Local/3] #Level/3
 "#,
         )
         .unwrap();
@@ -4181,8 +4227,7 @@ doc > h1 > d1
                                             "local".to_string(),
                                             vec![
                                                 HashTag::Str("local".to_string()),
-                                                HashTag::Space,
-                                                HashTag::Num(2)
+                                                HashTag::Int(2)
                                             ]
                                         )])),
                                         filters: None,
@@ -4192,7 +4237,7 @@ doc > h1 > d1
                                     None
                                 ),
                                 Span::Text(" "),
-                                Span::Hash(None, "Level 2")
+                                Span::Hash(None, "Level/2")
                             ],
                             IndexMap::from([(
                                 (
@@ -4211,8 +4256,7 @@ doc > h1 > d1
                                                     "local".to_string(),
                                                     vec![
                                                         HashTag::Str("local".to_string()),
-                                                        HashTag::Space,
-                                                        HashTag::Num(3)
+                                                        HashTag::Int(3)
                                                     ]
                                                 )])),
                                                 filters: None,
@@ -4222,7 +4266,7 @@ doc > h1 > d1
                                             None
                                         ),
                                         Span::Text(" "),
-                                        Span::Hash(None, "Level 3"),
+                                        Span::Hash(None, "Level/3"),
                                         Span::Text("\n"),
                                     ],
                                     IndexMap::from([]),
@@ -4231,8 +4275,7 @@ doc > h1 > d1
                                             "level".to_string(),
                                             vec![
                                                 HashTag::Str("level".to_string()),
-                                                HashTag::Space,
-                                                HashTag::Num(3)
+                                                HashTag::Int(3)
                                             ]
                                         )])),
                                         filters: None,
@@ -4245,8 +4288,7 @@ doc > h1 > d1
                                     "level".to_string(),
                                     vec![
                                         HashTag::Str("level".to_string()),
-                                        HashTag::Space,
-                                        HashTag::Num(2)
+                                        HashTag::Int(2)
                                     ]
                                 )])),
                                 filters: None,
